@@ -1,0 +1,158 @@
+"""MaSTNeT model — factorised space-time cross-attention imputer."""
+
+import torch
+import torch.nn as nn
+from torch import Tensor
+
+
+class _CrossAttentionBlock(nn.Module):
+    """Single cross-attention layer: query attends to a neighbourhood."""
+
+    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float):
+        super().__init__()
+        self.attn  = nn.MultiheadAttention(d_model, nhead, batch_first=True, dropout=dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.mlp   = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, d_model),
+        )
+
+    def forward(self, q: Tensor, kv: Tensor) -> Tensor:
+        attn_out, _ = self.attn(q, kv, kv)
+        q = self.norm1(q + attn_out)
+        return self.norm2(q + self.mlp(q))
+
+
+class MaSTNeT(nn.Module):
+    """
+    Masked Spatiotemporal Neighbourhood Transformer.
+
+    Reconstructs missing values in spatiotemporal point-cloud data by attending
+    to k-nearest spatial neighbours first, then k-nearest temporal neighbours
+    (factorised space-time cross-attention).
+
+    The model outputs a per-point mean **and** log-variance for every feature,
+    supporting heteroscedastic uncertainty quantification.
+
+    Parameters
+    ----------
+    n_features : int
+        Number of variables to impute.
+    coord_dim : int
+        Dimensionality of the (preprocessed) coordinate vector: 5 for linear
+        time encoding, 6 for cyclic time encoding.
+    d_model : int
+        Transformer embedding dimension.
+    nhead : int
+        Number of attention heads (must divide ``d_model``).
+    n_spatial_layers : int
+        Cross-attention layers applied over spatial neighbours.
+    n_temporal_layers : int
+        Cross-attention layers applied over temporal neighbours.
+    dim_feedforward : int
+        Hidden width of the feedforward sublayer in each attention block.
+    dropout : float
+        Dropout probability (active only during training).
+    use_masks : bool
+        If True, append the binary observation mask to each token, giving the
+        model explicit knowledge of which features are observed vs. filled.
+    fill_strategy : str
+        How to fill unobserved feature positions before computing attention:
+        ``'zero'`` fills with 0; ``'mean'`` fills with the per-feature global
+        mean estimated from training data.
+    global_means : list[float] or None
+        Per-feature means used when ``fill_strategy='mean'``.  Registered as a
+        buffer and automatically moved to the correct device.
+    """
+
+    def __init__(
+        self,
+        n_features: int,
+        coord_dim: int = 5,
+        d_model: int = 64,
+        nhead: int = 4,
+        n_spatial_layers: int = 3,
+        n_temporal_layers: int = 3,
+        dim_feedforward: int = 128,
+        dropout: float = 0.1,
+        use_masks: bool = True,
+        fill_strategy: str = "zero",
+        global_means=None,
+    ):
+        super().__init__()
+        self.n_features    = n_features
+        self.coord_dim     = coord_dim
+        self.use_masks     = use_masks
+        self.fill_strategy = fill_strategy
+
+        if global_means is not None:
+            self.register_buffer(
+                "global_means", torch.tensor(global_means, dtype=torch.float32)
+            )
+        else:
+            self.global_means = None
+
+        token_dim = coord_dim + n_features + (n_features if use_masks else 0)
+        self.input_proj = nn.Linear(token_dim, d_model)
+
+        self.spatial_layers = nn.ModuleList([
+            _CrossAttentionBlock(d_model, nhead, dim_feedforward, dropout)
+            for _ in range(n_spatial_layers)
+        ])
+        self.temporal_layers = nn.ModuleList([
+            _CrossAttentionBlock(d_model, nhead, dim_feedforward, dropout)
+            for _ in range(n_temporal_layers)
+        ])
+
+        self.mean_head = nn.Linear(d_model, n_features)
+        self.logvar_head = nn.Linear(d_model, n_features)
+
+    # ------------------------------------------------------------------
+
+    def _fill(self, features: Tensor, mask: Tensor) -> Tensor:
+        if self.fill_strategy == "mean" and self.global_means is not None:
+            fill = self.global_means.expand_as(features)
+        else:
+            fill = torch.zeros_like(features)
+        return torch.where(mask, features, fill)
+
+    def _token(self, coords: Tensor, features: Tensor, mask: Tensor) -> Tensor:
+        parts = [coords, self._fill(features, mask)]
+        if self.use_masks:
+            parts.append(mask.float())
+        return torch.cat(parts, dim=-1)
+
+    # ------------------------------------------------------------------
+
+    def forward(self, batch: dict) -> tuple[Tensor, Tensor]:
+        """
+        Parameters
+        ----------
+        batch : dict with keys
+            - ``query_features``  (B, F)
+            - ``query_mask``      (B, F) bool — True = observed
+            - ``query_coords``    (B, C)
+            - ``space``           dict with ``features`` (B, K, F), ``mask`` (B, K, F),
+                                  ``coords`` (B, K, C)
+            - ``time``            same structure as ``space``
+
+        Returns
+        -------
+        pred_mean : Tensor (B, F)
+        pred_logvar : Tensor (B, F)
+        """
+        q = self.input_proj(
+            self._token(batch["query_coords"], batch["query_features"], batch["query_mask"])
+        ).unsqueeze(1)  # (B, 1, D)
+
+        for scope, layers in (("space", self.spatial_layers), ("time", self.temporal_layers)):
+            nb = batch[scope]
+            n = self.input_proj(self._token(nb["coords"], nb["features"], nb["mask"]))
+            for layer in layers:
+                q = layer(q, n)
+
+        h = q[:, 0]  # (B, D)
+        return self.mean_head(h), self.logvar_head(h)

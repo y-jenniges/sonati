@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mastnet-imputer"
+version = "0.1.0"
+description = "MaSTNeT: Masked Spatiotemporal Neighbourhood Transformer for imputation of sparse oceanographic data"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Yvonne Jenniges" },
+]
+keywords = [
+    "imputation", "spatiotemporal", "oceanography",
+    "transformer", "deep-learning", "missing-data",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+    "tqdm",
+]
+
+[project.urls]
+"Source Code" = "https://github.com/y-jenniges/mastnet-imputer"
+"Bug Tracker"  = "https://github.com/y-jenniges/mastnet-imputer/issues"
+
+[tool.setuptools.packages.find]
+include = ["mastnet*"]
