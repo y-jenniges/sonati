@@ -1,0 +1,19 @@
+name: mastnet-imputer
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pytables          # HDF5 support for pd.read_hdf (examples/real_world_test.py)
+  - pip:
+      - torch==2.6.0
+      - torchvision==0.21.0
+      - torchaudio==2.6.0
+      - numpy>=1.24
+      - scikit-learn>=1.3
+      - tqdm
+      - requests      # downloading datasets in examples/
+      - pandas>=2.0
+      - pytest        # running tests/
+      - -e .          # editable install of mastnet-imputer itself
