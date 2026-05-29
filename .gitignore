@@ -19,6 +19,9 @@ env/
 # pytest
 .pytest_cache/
 
+# downloaded example data
+examples/.cache/
+
 # Trained model weights
 *.pt
 *.pth

@@ -16,30 +16,39 @@ Datasets
 --------
 1. Air quality — Open-Meteo free API (no key required)
    20 European city-centre locations, last 7 days hourly.
-   Variables: PM2.5, PM10, European AQI.
+   Variables: PM2.5 (μg/m³), PM10 (μg/m³), European AQI.
    https://open-meteo.com/en/docs/air-quality-api
 
-2. Traffic — METR-LA (Los Angeles freeway sensors)
-   207 real inductive-loop detector positions from the DCRNN paper
-   (Yaguang Li et al., 2018).  Sensor lat/lon fetched from GitHub;
-   speed and volume values are SYNTHETIC with a realistic rush-hour
-   profile.  To benchmark on real traffic, download metr-la.h5 from
-   https://github.com/liyaguang/DCRNN and adapt the loading section.
+2. Traffic — METR-LA (real data, Los Angeles freeway sensors)
+   207 inductive-loop detector positions from the DCRNN paper
+   (Yaguang Li et al., 2018).  Speed in mph, 5-min intervals.
+   Downloaded from SwitchDrive (Swiss research infrastructure),
+   cached locally after first run.
+   Source used by torch-spatiotemporal (Cini et al., 2022).
 
 Baselines
 ---------
-  Mean fill  — replace every missing value with the per-feature training mean.
-               Ignores all spatial, temporal, and cross-feature structure.
+  Mean fill  — per-feature column mean. Ignores all structure.
   KNN (feat) — sklearn KNNImputer(k=5) in feature space.
-               Finds nearest neighbours by feature similarity; ignores lat/lon/time.
-  MaSTNet    — spatiotemporal cross-attention imputer (this package).
-               Finds k-nearest neighbours in space and time separately.
+               Finds nearest neighbours by feature similarity only;
+               ignores lat/lon/time entirely.
+  MaSTNet    — spatiotemporal cross-attention (this package).
+
+Metrics
+-------
+  MAE  — mean absolute error in original units.
+  NMAE — normalised MAE = MAE / mean(|true values|) x 100 %.
+         Allows comparison across features with different scales
+         and with published benchmarks.
 """
 
 from __future__ import annotations
 
+import io
 import sys
+import zipfile
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -48,8 +57,11 @@ from sklearn.impute import KNNImputer, SimpleImputer
 
 from mastnet import MaSTNetImputer
 
+CACHE_DIR = Path(__file__).parent / ".cache"
+CACHE_DIR.mkdir(exist_ok=True)
 
-# ── evaluation helpers ────────────────────────────────────────────────────────
+
+# -- evaluation helpers -------------------------------------------------------
 
 def _mask_fraction(X: np.ndarray, frac: float, seed: int = 0):
     """Randomly blank out `frac` of the observed (non-NaN) values."""
@@ -60,43 +72,53 @@ def _mask_fraction(X: np.ndarray, frac: float, seed: int = 0):
     return Xm, held
 
 
-def _mae_per_feature(X_true: np.ndarray, X_pred: np.ndarray,
-                     held_out: np.ndarray, feature_names: list[str]) -> dict[str, float]:
-    """MAE per feature and overall, evaluated only on held-out positions."""
-    maes: dict[str, float] = {}
+def _compute_metrics(X_true: np.ndarray, X_pred: np.ndarray,
+                     held_out: np.ndarray,
+                     feature_names: list[str]) -> dict[str, dict[str, float]]:
+    """MAE and NMAE per feature and overall, evaluated on held-out positions."""
+    mae: dict[str, float] = {}
+    nmae: dict[str, float] = {}
     for i, name in enumerate(feature_names):
-        col_mask = held_out[:, i]
-        maes[name] = float(np.abs(X_pred[col_mask, i] - X_true[col_mask, i]).mean())
-    maes["overall"] = float(np.abs(X_pred[held_out] - X_true[held_out]).mean())
-    return maes
+        col_mask  = held_out[:, i]
+        true_vals = X_true[col_mask, i]
+        pred_vals = X_pred[col_mask, i]
+        mae[name]  = float(np.abs(pred_vals - true_vals).mean())
+        nmae[name] = float(mae[name] / np.abs(true_vals).mean() * 100)
+    mae["overall"]  = float(np.abs(X_pred[held_out] - X_true[held_out]).mean())
+    nmae["overall"] = float(mae["overall"] / np.abs(X_true[held_out]).mean() * 100)
+    return {"mae": mae, "nmae": nmae}
 
 
-def _print_table(results: dict[str, dict[str, float]],
-                 feature_names: list[str]) -> None:
-    """Print a comparison table: rows = methods, columns = features + overall."""
+def _print_tables(results: dict[str, dict],
+                  feature_names: list[str],
+                  mae_label: str = "MAE  (lower is better)",
+                  nmae_label: str = "NMAE %  = MAE / mean(|true|) x 100  (lower is better)",
+                  ref_note: str = "") -> None:
     col_names = feature_names + ["overall"]
     col_w     = max(10, max(len(n) for n in col_names) + 2)
     meth_w    = max(len(m) for m in results) + 2
 
-    header = f"  {'method':<{meth_w}}" + "".join(f"{n:>{col_w}}" for n in col_names)
-    sep    = "  " + "-" * (meth_w + col_w * len(col_names))
-    print(f"\n{header}")
-    print(sep)
-    for method, maes in results.items():
-        row = f"  {method:<{meth_w}}"
-        for name in col_names:
-            row += f"{maes[name]:>{col_w}.3f}"
-        print(row)
+    def _table(metric: str, fmt: str, suffix: str = "") -> None:
+        header = f"  {'method':<{meth_w}}" + "".join(f"{n:>{col_w}}" for n in col_names)
+        sep    = "  " + "-" * (meth_w + col_w * len(col_names))
+        print(header)
+        print(sep)
+        for method, metrics in results.items():
+            vals = metrics[metric]
+            row  = f"  {method:<{meth_w}}"
+            for name in col_names:
+                row += f"{vals[name]:>{col_w}{fmt}}{suffix}"
+            print(row)
+
+    print(f"\n  {mae_label}")
+    _table("mae", ".3f")
+    print(f"\n  {nmae_label}")
+    _table("nmae", ".1f", "%")
+    if ref_note:
+        print(f"\n  {ref_note}")
 
 
-def _run_and_collect(label: str, X_pred: np.ndarray,
-                     X_true: np.ndarray, held_out: np.ndarray,
-                     feature_names: list[str],
-                     results: dict[str, dict[str, float]]) -> None:
-    results[label] = _mae_per_feature(X_true, X_pred, held_out, feature_names)
-
-
-# ── 1. Air quality ────────────────────────────────────────────────────────────
+# -- 1. Air quality -----------------------------------------------------------
 
 CITIES = [
     ("London",      51.51,  -0.13), ("Paris",       48.85,   2.35),
@@ -115,7 +137,7 @@ AQ_VARS = ["pm2_5", "pm10", "european_aqi"]
 
 def run_air_quality() -> None:
     print("\n" + "=" * 64)
-    print("AIR QUALITY — Open-Meteo, 20 European cities, 7-day hourly")
+    print("AIR QUALITY -- Open-Meteo, 20 European cities, 7-day hourly")
     print("=" * 64)
 
     end_date   = date.today()
@@ -153,23 +175,19 @@ def run_air_quality() -> None:
     natural_nan = np.isnan(X).mean()
     X_masked, held_out = _mask_fraction(X, frac=0.20, seed=0)
     print(f"  {len(X)} rows | natural NaN {natural_nan:.1%} "
-          f"→ after extra 20 % masking: {np.isnan(X_masked).mean():.1%}")
-    print(f"  Units: pm2_5 μg/m³ | pm10 μg/m³ | european_aqi EAQI (0–100+)")
+          f"-> after extra 20 % masking: {np.isnan(X_masked).mean():.1%}")
+    print(f"  Units: pm2_5 ug/m3 | pm10 ug/m3 | european_aqi EAQI")
 
-    results: dict[str, dict[str, float]] = {}
+    results: dict[str, dict] = {}
 
-    # ── baselines ──
     print("\n  Running baselines ...", end="", flush=True)
-
     X_mean = SimpleImputer(strategy="mean").fit_transform(X_masked)
-    _run_and_collect("Mean fill", X_mean, X, held_out, AQ_VARS, results)
+    results["Mean fill"] = _compute_metrics(X, X_mean, held_out, AQ_VARS)
 
     X_knn = KNNImputer(n_neighbors=5).fit_transform(X_masked)
-    _run_and_collect("KNN feat-space (k=5)", X_knn, X, held_out, AQ_VARS, results)
-
+    results["KNN feat-space (k=5)"] = _compute_metrics(X, X_knn, held_out, AQ_VARS)
     print(" done")
 
-    # ── MaSTNet ──
     print("  Running MaSTNet ...")
     imputer = MaSTNetImputer(
         n_neighbours=20, max_epochs=40, patience=5,
@@ -180,73 +198,85 @@ def run_air_quality() -> None:
     X_mastnet = imputer.fit_transform(X_masked, coords)
     obs_mae = np.abs(X_mastnet[~np.isnan(X_masked)] - X_masked[~np.isnan(X_masked)]).mean()
     print(f"  MAE on observed values: {obs_mae:.4f}  [should be ~0]")
-    _run_and_collect("MaSTNet", X_mastnet, X, held_out, AQ_VARS, results)
+    results["MaSTNet"] = _compute_metrics(X, X_mastnet, held_out, AQ_VARS)
 
-    print("\n  MAE on held-out positions (lower is better):")
-    _print_table(results, AQ_VARS)
-
-
-# ── 2. Traffic (METR-LA positions + synthetic values) ─────────────────────────
-
-METR_LA_SENSOR_URL = (
-    "https://raw.githubusercontent.com/liyaguang/DCRNN"
-    "/master/data/sensor_graph/graph_sensor_locations.csv"
-)
-TRAFFIC_HOURS = 72          # 3 days — increase for a fuller benchmark
-TRAFFIC_VARS  = ["speed_kmh", "volume"]
+    _print_tables(results, AQ_VARS)
 
 
-def _synthetic_traffic(sensors: pd.DataFrame, n_hours: int,
-                        seed: int = 0) -> pd.DataFrame:
-    """Rush-hour speed + volume profile. Replace with real metr-la.h5 data."""
-    rng     = np.random.default_rng(seed)
-    records = []
-    for _, row in sensors.iterrows():
-        lat, lon = row["latitude"], row["longitude"]
-        for h in range(n_hours):
-            hod   = h % 24
-            rush  = (np.exp(-((hod - 8) ** 2) / 4) +
-                     np.exp(-((hod - 17) ** 2) / 4))
-            speed = max(5.0,  105 - 55 * rush + rng.normal(0, 4))
-            vol   = max(0.0,  250 * rush + 40  + rng.normal(0, 20))
-            records.append([lat, lon, float(h), speed, vol])
-    return pd.DataFrame(records, columns=["lat", "lon", "time_h"] + TRAFFIC_VARS)
+# -- 2. Traffic -- real METR-LA data ------------------------------------------
+
+METR_LA_URL   = "https://drive.switch.ch/index.php/s/Z8cKHAVyiDqkzaG/download"
+METR_LA_HOURS = 72    # 3 days of hourly data (subsampled from 5-min)
+TRAFFIC_VARS  = ["speed_mph"]
+
+
+def _load_metr_la() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Download once, cache, and return (speed_df, locations)."""
+    h5_path  = CACHE_DIR / "metr_la.h5"
+    loc_path = CACHE_DIR / "sensor_locations_la.csv"
+
+    if not h5_path.exists():
+        print("  Downloading METR-LA (~13 MB) ...", end="", flush=True)
+        r = requests.get(METR_LA_URL, timeout=120)
+        r.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            z.extractall(CACHE_DIR)
+        print(" done  (cached at examples/.cache/ for future runs)")
+    else:
+        print("  Loading cached METR-LA data")
+
+    speed_df  = pd.read_hdf(h5_path)
+    locations = pd.read_csv(loc_path)
+    return speed_df, locations
 
 
 def run_traffic() -> None:
     print("\n" + "=" * 64)
-    print("TRAFFIC — METR-LA sensor positions (synthetic speed/volume)")
+    print("TRAFFIC -- METR-LA, 207 LA freeway sensors (real data)")
     print("=" * 64)
 
-    print("  Fetching METR-LA sensor locations ...", end="", flush=True)
-    sensors = pd.read_csv(METR_LA_SENSOR_URL,
-                          usecols=["sensor_id", "latitude", "longitude"])
-    print(f" {len(sensors)} sensors")
+    speed_df, locations = _load_metr_la()
 
-    df     = _synthetic_traffic(sensors, n_hours=TRAFFIC_HOURS)
-    X      = df[TRAFFIC_VARS].to_numpy(dtype=float)
-    coords = np.column_stack([df["lat"], df["lon"],
-                               np.zeros(len(df)), df["time_h"]])
+    # Subset: first 3 days at hourly resolution (every 12th 5-min sample)
+    speed_sub = speed_df.iloc[:METR_LA_HOURS * 12 : 12].copy()  # (72, 207)
+
+    # Zeros encode sensor failures -- treat as missing
+    speed_sub       = speed_sub.replace(0.0, np.nan)
+    natural_nan_pct = speed_sub.isna().mean().mean()
+
+    # Build (n_samples, n_features) arrays in long format
+    locations  = locations.set_index("sensor_id")
+    sensor_ids = speed_sub.columns.astype(int)
+    lats = locations.loc[sensor_ids, "latitude"].values   # (207,)
+    lons = locations.loc[sensor_ids, "longitude"].values  # (207,)
+
+    t0  = speed_sub.index[0]
+    t_h = np.array([(t - t0).total_seconds() / 3600 for t in speed_sub.index])
+
+    n_t, n_s  = speed_sub.shape                          # 72, 207
+    lats_flat = np.repeat(lats, n_t)                     # sensor lat for each row
+    lons_flat = np.repeat(lons, n_t)
+    t_flat    = np.tile(t_h, n_s)                        # hour for each row
+    X         = speed_sub.values.T.flatten().reshape(-1, 1)  # (14904, 1)
+
+    coords = np.column_stack([lats_flat, lons_flat,
+                               np.zeros(len(X)), t_flat])
 
     X_masked, held_out = _mask_fraction(X, frac=0.25, seed=1)
-    print(f"  {len(X)} rows ({len(sensors)} sensors × {TRAFFIC_HOURS} h) | "
-          f"masked: {np.isnan(X_masked).mean():.1%}")
-    print(f"  Units: speed_kmh km/h (5–105) | volume veh/h (0–500)")
+    print(f"  {len(X)} rows ({n_s} sensors x {METR_LA_HOURS} h hourly) | "
+          f"natural NaN {natural_nan_pct:.1%} | total masked: {np.isnan(X_masked).mean():.1%}")
+    print(f"  Unit: speed in mph")
 
-    results: dict[str, dict[str, float]] = {}
+    results: dict[str, dict] = {}
 
-    # ── baselines ──
     print("\n  Running baselines ...", end="", flush=True)
-
     X_mean = SimpleImputer(strategy="mean").fit_transform(X_masked)
-    _run_and_collect("Mean fill", X_mean, X, held_out, TRAFFIC_VARS, results)
+    results["Mean fill"] = _compute_metrics(X, X_mean, held_out, TRAFFIC_VARS)
 
     X_knn = KNNImputer(n_neighbors=5).fit_transform(X_masked)
-    _run_and_collect("KNN feat-space (k=5)", X_knn, X, held_out, TRAFFIC_VARS, results)
-
+    results["KNN feat-space (k=5)"] = _compute_metrics(X, X_knn, held_out, TRAFFIC_VARS)
     print(" done")
 
-    # ── MaSTNet ──
     print("  Running MaSTNet ...")
     imputer = MaSTNetImputer(
         n_neighbours=15, max_epochs=20, patience=5,
@@ -257,13 +287,19 @@ def run_traffic() -> None:
     X_mastnet = imputer.fit_transform(X_masked, coords)
     obs_mae = np.abs(X_mastnet[~np.isnan(X_masked)] - X_masked[~np.isnan(X_masked)]).mean()
     print(f"  MAE on observed values: {obs_mae:.4f}  [should be ~0]")
-    _run_and_collect("MaSTNet", X_mastnet, X, held_out, TRAFFIC_VARS, results)
+    results["MaSTNet"] = _compute_metrics(X, X_mastnet, held_out, TRAFFIC_VARS)
 
-    print("\n  MAE on held-out positions (lower is better):")
-    _print_table(results, TRAFFIC_VARS)
+    _print_tables(
+        results, TRAFFIC_VARS,
+        ref_note=(
+            "Reference -- GRIN (Cini et al., 2022) on METR-LA, 25 % random missing:\n"
+            "  MAE ~1.40 mph  |  NMAE ~3.1 %\n"
+            "  (larger model, full 4-month dataset, trained to convergence)"
+        ),
+    )
 
 
-# ── entry point ───────────────────────────────────────────────────────────────
+# -- entry point --------------------------------------------------------------
 
 if __name__ == "__main__":
     target = sys.argv[1].lower() if len(sys.argv) > 1 else "both"
