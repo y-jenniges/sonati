@@ -10,6 +10,7 @@ Usage
 Requirements (beyond mastnet-imputer deps)
 ------------------------------------------
     pip install requests
+    scikit-learn is already a core dependency
 
 Datasets
 --------
@@ -24,6 +25,15 @@ Datasets
    speed and volume values are SYNTHETIC with a realistic rush-hour
    profile.  To benchmark on real traffic, download metr-la.h5 from
    https://github.com/liyaguang/DCRNN and adapt the loading section.
+
+Baselines
+---------
+  Mean fill  — replace every missing value with the per-feature training mean.
+               Ignores all spatial, temporal, and cross-feature structure.
+  KNN (feat) — sklearn KNNImputer(k=5) in feature space.
+               Finds nearest neighbours by feature similarity; ignores lat/lon/time.
+  MaSTNet    — spatiotemporal cross-attention imputer (this package).
+               Finds k-nearest neighbours in space and time separately.
 """
 
 from __future__ import annotations
@@ -34,11 +44,12 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 import requests
+from sklearn.impute import KNNImputer, SimpleImputer
 
 from mastnet import MaSTNetImputer
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ── evaluation helpers ────────────────────────────────────────────────────────
 
 def _mask_fraction(X: np.ndarray, frac: float, seed: int = 0):
     """Randomly blank out `frac` of the observed (non-NaN) values."""
@@ -49,18 +60,40 @@ def _mask_fraction(X: np.ndarray, frac: float, seed: int = 0):
     return Xm, held
 
 
-def _report(tag: str, X_in: np.ndarray, X_out: np.ndarray, X_true: np.ndarray,
-            held_out: np.ndarray) -> None:
-    nan_in  = np.isnan(X_in).mean()
-    nan_out = np.isnan(X_out).mean()
-    obs     = ~np.isnan(X_in)
-    delta_obs  = np.abs(X_out[obs]      - X_in[obs]).mean()
-    delta_held = np.abs(X_out[held_out] - X_true[held_out]).mean()
-    print(f"\n  {tag}")
-    print(f"    shape            : {X_in.shape}")
-    print(f"    missing → missing: {nan_in:.1%} → {nan_out:.1%}")
-    print(f"    MAE (observed)   : {delta_obs:.4f}  [should be ~0]")
-    print(f"    MAE (held-out)   : {delta_held:.4f}  [imputation quality]")
+def _mae_per_feature(X_true: np.ndarray, X_pred: np.ndarray,
+                     held_out: np.ndarray, feature_names: list[str]) -> dict[str, float]:
+    """MAE per feature and overall, evaluated only on held-out positions."""
+    maes: dict[str, float] = {}
+    for i, name in enumerate(feature_names):
+        col_mask = held_out[:, i]
+        maes[name] = float(np.abs(X_pred[col_mask, i] - X_true[col_mask, i]).mean())
+    maes["overall"] = float(np.abs(X_pred[held_out] - X_true[held_out]).mean())
+    return maes
+
+
+def _print_table(results: dict[str, dict[str, float]],
+                 feature_names: list[str]) -> None:
+    """Print a comparison table: rows = methods, columns = features + overall."""
+    col_names = feature_names + ["overall"]
+    col_w     = max(10, max(len(n) for n in col_names) + 2)
+    meth_w    = max(len(m) for m in results) + 2
+
+    header = f"  {'method':<{meth_w}}" + "".join(f"{n:>{col_w}}" for n in col_names)
+    sep    = "  " + "-" * (meth_w + col_w * len(col_names))
+    print(f"\n{header}")
+    print(sep)
+    for method, maes in results.items():
+        row = f"  {method:<{meth_w}}"
+        for name in col_names:
+            row += f"{maes[name]:>{col_w}.3f}"
+        print(row)
+
+
+def _run_and_collect(label: str, X_pred: np.ndarray,
+                     X_true: np.ndarray, held_out: np.ndarray,
+                     feature_names: list[str],
+                     results: dict[str, dict[str, float]]) -> None:
+    results[label] = _mae_per_feature(X_true, X_pred, held_out, feature_names)
 
 
 # ── 1. Air quality ────────────────────────────────────────────────────────────
@@ -110,7 +143,7 @@ def run_air_quality() -> None:
     print(" done")
 
     aq = pd.concat(rows, ignore_index=True)
-    t0          = pd.to_datetime(aq["time"]).min()
+    t0           = pd.to_datetime(aq["time"]).min()
     aq["time_h"] = (pd.to_datetime(aq["time"]) - t0).dt.total_seconds() / 3600
 
     X      = aq[AQ_VARS].to_numpy(dtype=float)
@@ -121,15 +154,36 @@ def run_air_quality() -> None:
     X_masked, held_out = _mask_fraction(X, frac=0.20, seed=0)
     print(f"  {len(X)} rows | natural NaN {natural_nan:.1%} "
           f"→ after extra 20 % masking: {np.isnan(X_masked).mean():.1%}")
+    print(f"  Units: pm2_5 μg/m³ | pm10 μg/m³ | european_aqi EAQI (0–100+)")
 
+    results: dict[str, dict[str, float]] = {}
+
+    # ── baselines ──
+    print("\n  Running baselines ...", end="", flush=True)
+
+    X_mean = SimpleImputer(strategy="mean").fit_transform(X_masked)
+    _run_and_collect("Mean fill", X_mean, X, held_out, AQ_VARS, results)
+
+    X_knn = KNNImputer(n_neighbors=5).fit_transform(X_masked)
+    _run_and_collect("KNN feat-space (k=5)", X_knn, X, held_out, AQ_VARS, results)
+
+    print(" done")
+
+    # ── MaSTNet ──
+    print("  Running MaSTNet ...")
     imputer = MaSTNetImputer(
         n_neighbours=20, max_epochs=40, patience=5,
         d_model=32, dim_feedforward=64,
         n_spatial_layers=2, n_temporal_layers=2,
         device="auto", seed=42,
     )
-    X_filled = imputer.fit_transform(X_masked, coords)
-    _report("Air quality", X_masked, X_filled, X, held_out)
+    X_mastnet = imputer.fit_transform(X_masked, coords)
+    obs_mae = np.abs(X_mastnet[~np.isnan(X_masked)] - X_masked[~np.isnan(X_masked)]).mean()
+    print(f"  MAE on observed values: {obs_mae:.4f}  [should be ~0]")
+    _run_and_collect("MaSTNet", X_mastnet, X, held_out, AQ_VARS, results)
+
+    print("\n  MAE on held-out positions (lower is better):")
+    _print_table(results, AQ_VARS)
 
 
 # ── 2. Traffic (METR-LA positions + synthetic values) ─────────────────────────
@@ -177,15 +231,36 @@ def run_traffic() -> None:
     X_masked, held_out = _mask_fraction(X, frac=0.25, seed=1)
     print(f"  {len(X)} rows ({len(sensors)} sensors × {TRAFFIC_HOURS} h) | "
           f"masked: {np.isnan(X_masked).mean():.1%}")
+    print(f"  Units: speed_kmh km/h (5–105) | volume veh/h (0–500)")
 
+    results: dict[str, dict[str, float]] = {}
+
+    # ── baselines ──
+    print("\n  Running baselines ...", end="", flush=True)
+
+    X_mean = SimpleImputer(strategy="mean").fit_transform(X_masked)
+    _run_and_collect("Mean fill", X_mean, X, held_out, TRAFFIC_VARS, results)
+
+    X_knn = KNNImputer(n_neighbors=5).fit_transform(X_masked)
+    _run_and_collect("KNN feat-space (k=5)", X_knn, X, held_out, TRAFFIC_VARS, results)
+
+    print(" done")
+
+    # ── MaSTNet ──
+    print("  Running MaSTNet ...")
     imputer = MaSTNetImputer(
         n_neighbours=15, max_epochs=20, patience=5,
         d_model=32, dim_feedforward=64,
         n_spatial_layers=2, n_temporal_layers=2,
         device="auto", seed=0,
     )
-    X_filled = imputer.fit_transform(X_masked, coords)
-    _report("Traffic", X_masked, X_filled, X, held_out)
+    X_mastnet = imputer.fit_transform(X_masked, coords)
+    obs_mae = np.abs(X_mastnet[~np.isnan(X_masked)] - X_masked[~np.isnan(X_masked)]).mean()
+    print(f"  MAE on observed values: {obs_mae:.4f}  [should be ~0]")
+    _run_and_collect("MaSTNet", X_mastnet, X, held_out, TRAFFIC_VARS, results)
+
+    print("\n  MAE on held-out positions (lower is better):")
+    _print_table(results, TRAFFIC_VARS)
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
