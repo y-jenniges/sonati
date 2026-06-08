@@ -16,6 +16,7 @@ from tqdm import tqdm
 # ------------------------------------------------------------------
 
 def _masked_mse(pred: Tensor, target: Tensor, mask: Tensor) -> Tensor:
+    """MSE loss computed only on observed (masked-in) positions."""
     return F.mse_loss(pred[mask], target[mask])
 
 
@@ -27,6 +28,7 @@ def _heteroscedastic_nll(pred_mean: Tensor, pred_logvar: Tensor,
 
 
 def _build_loss(loss_name: str) -> Callable:
+    """Return the loss callable corresponding to ``loss_name``."""
     if loss_name == "mse":
         return lambda mean, logvar, target, mask: _masked_mse(mean, target, mask)
     elif loss_name == "hetero":
@@ -43,8 +45,20 @@ def _apply_random_mask(batch: dict, mask_ratio: float, device: torch.device) -> 
     """
     Randomly hide a fraction of the observed query features.
 
-    Returns a modified batch (query_mask reflects what the model sees) and
-    a loss_mask (positions to compute reconstruction loss on).
+    Parameters
+    ----------
+    batch : dict
+        Batch dict from :class:`mastnet._graph.NeighbourDataset`.
+    mask_ratio : float
+        Fraction of observed query values to hide for reconstruction.
+    device : torch.device
+
+    Returns
+    -------
+    batch : dict
+        Shallow copy with ``query_mask`` and neighbour masks reduced.
+    loss_mask : Tensor of shape (B, F)
+        Boolean mask selecting positions to compute reconstruction loss on.
     """
     q_mask = batch["query_mask"]            # (B, F) bool — truly observed
     B, F = q_mask.shape
@@ -66,6 +80,7 @@ def _apply_random_mask(batch: dict, mask_ratio: float, device: torch.device) -> 
 
 
 def _to_device(obj, device: torch.device):
+    """Recursively move tensors in a nested dict/Tensor structure to ``device``."""
     if isinstance(obj, dict):
         return {k: _to_device(v, device) for k, v in obj.items()}
     if isinstance(obj, Tensor):
@@ -78,6 +93,19 @@ def _to_device(obj, device: torch.device):
 # ------------------------------------------------------------------
 
 class EarlyStopping:
+    """
+    Early stopping based on validation loss improvement.
+
+    Parameters
+    ----------
+    patience : int, optional
+        Number of epochs to wait without improvement before stopping,
+        by default 10.
+    min_delta_ratio : float, optional
+        Minimum fractional improvement required to count as a new best,
+        by default 1e-4.
+    """
+
     def __init__(self, patience: int = 10, min_delta_ratio: float = 1e-4):
         self.patience        = patience
         self.min_delta_ratio = min_delta_ratio
@@ -104,6 +132,7 @@ class EarlyStopping:
 
 def _train_epoch(model, loader: DataLoader, optimizer, loss_fn: Callable,
                  mask_ratio: float, device: torch.device) -> float:
+    """Run one training epoch; return mean loss per observed value."""
     model.train()
     total, n = 0.0, 0
     for batch in loader:
@@ -125,6 +154,7 @@ def _train_epoch(model, loader: DataLoader, optimizer, loss_fn: Callable,
 @torch.no_grad()
 def _eval_epoch(model, loader: DataLoader, loss_fn: Callable,
                 mask_ratio: float, device: torch.device) -> float:
+    """Evaluate on ``loader`` without gradient updates; return mean loss."""
     model.eval()
     total, n = 0.0, 0
     for batch in loader:
@@ -142,7 +172,20 @@ def _eval_epoch(model, loader: DataLoader, loss_fn: Callable,
 
 @torch.no_grad()
 def reconstruct(model, loader: DataLoader, device: torch.device) -> Tensor:
-    """Run full reconstruction (no masking). Returns predictions (n, F)."""
+    """
+    Run full reconstruction without masking.
+
+    Parameters
+    ----------
+    model : MaSTNeT
+    loader : DataLoader
+    device : torch.device
+
+    Returns
+    -------
+    Tensor of shape (n, n_features)
+        Predicted means for every point in the loader.
+    """
     model.eval()
     preds = []
     for batch in loader:
@@ -155,7 +198,26 @@ def reconstruct(model, loader: DataLoader, device: torch.device) -> Tensor:
 def fit(model, train_loader: DataLoader, val_loader: DataLoader,
         max_epochs: int, lr: float, mask_ratio: float,
         patience: int, device: torch.device, loss_name: str = "hetero") -> None:
-    """Train ``model`` in-place; restores best weights at the end."""
+    """
+    Train ``model`` in-place with early stopping; restores best weights.
+
+    Parameters
+    ----------
+    model : MaSTNeT
+    train_loader : DataLoader
+    val_loader : DataLoader
+    max_epochs : int
+    lr : float
+        Adam learning rate.
+    mask_ratio : float
+        Fraction of observed values randomly hidden per training step.
+    patience : int
+        Early-stopping patience in epochs.
+    device : torch.device
+    loss_name : str, optional
+        ``'hetero'`` for heteroscedastic Gaussian NLL or ``'mse'`` for
+        plain masked MSE, by default ``'hetero'``.
+    """
     optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn    = _build_loss(loss_name)
     stopper    = EarlyStopping(patience=patience)
