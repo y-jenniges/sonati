@@ -90,7 +90,21 @@ def preprocess(coords: torch.Tensor, values: torch.Tensor,
 
 def inverse_transform(values_scaled: np.ndarray, scaler_dict: dict,
                       feature_names: list[str]) -> np.ndarray:
-    """Invert per-feature MinMax scaling."""
+    """
+    Invert per-feature MinMax scaling.
+
+    Parameters
+    ----------
+    values_scaled : ndarray of shape (n, n_features)
+    scaler_dict : dict
+        Fitted scalers keyed by feature name, as returned by :func:`preprocess`.
+    feature_names : list of str
+
+    Returns
+    -------
+    ndarray of shape (n, n_features)
+        Values restored to the original (unscaled) range.
+    """
     out = values_scaled.copy()
     for i, name in enumerate(feature_names):
         if name in scaler_dict:
