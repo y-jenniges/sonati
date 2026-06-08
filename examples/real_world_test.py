@@ -190,7 +190,7 @@ def run_air_quality() -> None:
 
     print("  Running MaSTNet ...")
     imputer = MaSTNetImputer(
-        n_neighbours=20, max_epochs=40, patience=5,
+        n_neighbours_space=20, n_neighbours_time=20, max_epochs=40, patience=5,
         d_model=32, dim_feedforward=64,
         n_spatial_layers=2, n_temporal_layers=2,
         device="auto", seed=42,
@@ -206,7 +206,7 @@ def run_air_quality() -> None:
 # -- 2. Traffic -- real METR-LA data ------------------------------------------
 
 METR_LA_URL   = "https://drive.switch.ch/index.php/s/Z8cKHAVyiDqkzaG/download"
-METR_LA_HOURS = 72    # 3 days of hourly data (subsampled from 5-min)
+METR_LA_HOURS = 72    # 3 days of hourly data (subsampled from 5-min) max is 4 months?
 TRAFFIC_VARS  = ["speed_mph"]
 
 
@@ -279,7 +279,7 @@ def run_traffic() -> None:
 
     print("  Running MaSTNet ...")
     imputer = MaSTNetImputer(
-        n_neighbours=15, max_epochs=20, patience=5,
+        n_neighbours_space=15, n_neighbours_time=15, max_epochs=20, patience=5,
         d_model=32, dim_feedforward=64,
         n_spatial_layers=2, n_temporal_layers=2,
         device="auto", seed=0,

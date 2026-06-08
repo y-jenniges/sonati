@@ -18,7 +18,7 @@ def _dummy_data(n: int = 300, n_features: int = 3, seed: int = 0):
     return X, coords
 
 
-_FAST = dict(max_epochs=2, n_neighbours=10, patience=2, d_model=16, dim_feedforward=32)
+_FAST = dict(max_epochs=2, n_neighbours_space=10, n_neighbours_time=10, patience=2, d_model=16, dim_feedforward=32)
 
 
 def test_import():

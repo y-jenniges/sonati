@@ -21,6 +21,7 @@ class _CrossAttentionBlock(nn.Module):
         )
 
     def forward(self, q: Tensor, kv: Tensor) -> Tensor:
+        """Apply cross-attention from ``q`` to ``kv``, then feedforward."""
         attn_out, _ = self.attn(q, kv, kv)
         q = self.norm1(q + attn_out)
         return self.norm2(q + self.mlp(q))
@@ -113,6 +114,7 @@ class MaSTNeT(nn.Module):
     # ------------------------------------------------------------------
 
     def _fill(self, features: Tensor, mask: Tensor) -> Tensor:
+        """Replace unobserved positions with zeros or global feature means."""
         if self.fill_strategy == "mean" and self.global_means is not None:
             fill = self.global_means.expand_as(features)
         else:
@@ -120,6 +122,7 @@ class MaSTNeT(nn.Module):
         return torch.where(mask, features, fill)
 
     def _token(self, coords: Tensor, features: Tensor, mask: Tensor) -> Tensor:
+        """Concatenate coordinates, filled features, and optionally the observation mask."""
         parts = [coords, self._fill(features, mask)]
         if self.use_masks:
             parts.append(mask.float())

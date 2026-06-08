@@ -42,9 +42,10 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
     Parameters
     ----------
-    n_neighbours : int, default=30
-        Number of nearest neighbours per query in both the spatial and the
-        temporal graph.
+    n_neighbours_space : int, default=30
+        Number of nearest neighbours per query in the spatial graph.
+    n_neighbours_time : int, default=30
+        Number of nearest neighbours per query in the temporal graph.
     d_model : int, default=64
         Transformer embedding dimension.
     nhead : int, default=4
@@ -112,13 +113,14 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     ...     rng.uniform(0, 5000, n),                   # depth (m)
     ...     rng.integers(1990, 2020, n).astype(float), # year
     ... ])
-    >>> imputer = MaSTNetImputer(max_epochs=50, n_neighbours=15)
+    >>> imputer = MaSTNetImputer(max_epochs=50, n_neighbours_space=15, n_neighbours_time=15)
     >>> X_filled = imputer.fit_transform(X, coords)
     """
 
     def __init__(
         self,
-        n_neighbours: int = 30,
+        n_neighbours_space: int = 30,
+        n_neighbours_time: int = 30,
         d_model: int = 64,
         nhead: int = 4,
         n_spatial_layers: int = 3,
@@ -139,8 +141,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         seed: int = 42,
         feature_names=None,
     ):
-        self.n_neighbours     = n_neighbours
-        self.d_model          = d_model
+        self.n_neighbours_space = n_neighbours_space
+        self.n_neighbours_time  = n_neighbours_time
+        self.d_model            = d_model
         self.nhead            = nhead
         self.n_spatial_layers = n_spatial_layers
         self.n_temporal_layers = n_temporal_layers
@@ -236,7 +239,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         # Build graph (validation feature values masked to prevent leakage)
         values_for_graph = values_full.clone()
         values_for_graph[val_idx] = float("nan")
-        graph = build_graph(coords_full, self.n_neighbours)
+        graph = build_graph(coords_full, self.n_neighbours_space, self.n_neighbours_time)
         self.graph_ = graph
 
         # Loaders
@@ -300,7 +303,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             scaler_dict=self.scaler_dict_,
         )
 
-        graph  = build_graph(coords_scaled, self.n_neighbours)
+        graph  = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
         preds_np = inverse_transform(

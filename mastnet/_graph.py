@@ -1,10 +1,9 @@
 """k-NN graph construction and neighbour dataset for MaSTNeT."""
 
 from typing import Any, Dict
-
 import numpy as np
-import torch
 from sklearn.neighbors import NearestNeighbors
+import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
@@ -16,7 +15,11 @@ def _knn_indices(coords: np.ndarray, k: int) -> torch.Tensor:
     return torch.tensor(idx[:, 1:], dtype=torch.long)  # drop self
 
 
-def build_graph(coords_scaled: Tensor, n_neighbours: int) -> Dict[str, Tensor]:
+def build_graph(
+    coords_scaled: Tensor,
+    n_neighbours_space: int,
+    n_neighbours_time: int,
+) -> Dict[str, Tensor]:
     """
     Build separate spatial and temporal k-NN graphs.
 
@@ -29,15 +32,18 @@ def build_graph(coords_scaled: Tensor, n_neighbours: int) -> Dict[str, Tensor]:
     coords_scaled : Tensor of shape (n, coord_dim)
         Preprocessed coordinates from :func:`mastnet._preprocessing.preprocess`.
         Columns 0–3 are (x, y, z, depth); columns 4+ are scaled time.
-    n_neighbours : int
+    n_neighbours_space : int
+        Number of nearest neighbours per query in the spatial graph.
+    n_neighbours_time : int
+        Number of nearest neighbours per query in the temporal graph.
 
     Returns
     -------
     dict with keys ``'space'`` and ``'time'``, each a LongTensor of shape (n, k).
     """
     c = coords_scaled.cpu().numpy()
-    space_idx = _knn_indices(c[:, :4], n_neighbours)   # x, y, z, depth
-    time_idx  = _knn_indices(c[:, 4:], n_neighbours)   # scaled time (1 or 2 cols)
+    space_idx = _knn_indices(c[:, :4], n_neighbours_space)   # x, y, z, depth
+    time_idx  = _knn_indices(c[:, 4:], n_neighbours_time)    # scaled time (1 or 2 cols)
     return {"space": space_idx, "time": time_idx}
 
 
