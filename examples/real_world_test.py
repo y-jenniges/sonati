@@ -1,10 +1,10 @@
 """
-Real-world tests of MaSTNetImputer on two spatiotemporal domains.
+Real-world tests of MaSTNetImputer on two spatio-temporal domains.
 
 Usage
 -----
     python examples/real_world_test.py            # both datasets
-    python examples/real_world_test.py airquality  # air quality only
+    python examples/real_world_test.py air quality  # air quality only
     python examples/real_world_test.py traffic     # traffic only
 
 Requirements (beyond mastnet-imputer deps)
@@ -65,9 +65,9 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 def _mask_fraction(X: np.ndarray, frac: float, seed: int = 0):
     """Randomly blank out `frac` of the observed (non-NaN) values."""
-    rng  = np.random.default_rng(seed)
+    rng = np.random.default_rng(seed)
     held = ~np.isnan(X) & (rng.random(X.shape) < frac)
-    Xm   = X.copy()
+    Xm = X.copy()
     Xm[held] = np.nan
     return Xm, held
 
@@ -79,12 +79,12 @@ def _compute_metrics(X_true: np.ndarray, X_pred: np.ndarray,
     mae: dict[str, float] = {}
     nmae: dict[str, float] = {}
     for i, name in enumerate(feature_names):
-        col_mask  = held_out[:, i]
+        col_mask = held_out[:, i]
         true_vals = X_true[col_mask, i]
         pred_vals = X_pred[col_mask, i]
-        mae[name]  = float(np.abs(pred_vals - true_vals).mean())
+        mae[name] = float(np.abs(pred_vals - true_vals).mean())
         nmae[name] = float(mae[name] / np.abs(true_vals).mean() * 100)
-    mae["overall"]  = float(np.abs(X_pred[held_out] - X_true[held_out]).mean())
+    mae["overall"] = float(np.abs(X_pred[held_out] - X_true[held_out]).mean())
     nmae["overall"] = float(mae["overall"] / np.abs(X_true[held_out]).mean() * 100)
     return {"mae": mae, "nmae": nmae}
 
@@ -95,17 +95,17 @@ def _print_tables(results: dict[str, dict],
                   nmae_label: str = "NMAE %  = MAE / mean(|true|) x 100  (lower is better)",
                   ref_note: str = "") -> None:
     col_names = feature_names + ["overall"]
-    col_w     = max(10, max(len(n) for n in col_names) + 2)
-    meth_w    = max(len(m) for m in results) + 2
+    col_w = max(10, max(len(n) for n in col_names) + 2)
+    meth_w = max(len(m) for m in results) + 2
 
     def _table(metric: str, fmt: str, suffix: str = "") -> None:
         header = f"  {'method':<{meth_w}}" + "".join(f"{n:>{col_w}}" for n in col_names)
-        sep    = "  " + "-" * (meth_w + col_w * len(col_names))
+        sep = "  " + "-" * (meth_w + col_w * len(col_names))
         print(header)
         print(sep)
         for method, metrics in results.items():
             vals = metrics[metric]
-            row  = f"  {method:<{meth_w}}"
+            row = f"  {method:<{meth_w}}"
             for name in col_names:
                 row += f"{vals[name]:>{col_w}{fmt}}{suffix}"
             print(row)
@@ -121,16 +121,16 @@ def _print_tables(results: dict[str, dict],
 # -- 1. Air quality -----------------------------------------------------------
 
 CITIES = [
-    ("London",      51.51,  -0.13), ("Paris",       48.85,   2.35),
-    ("Berlin",      52.52,  13.41), ("Madrid",      40.42,  -3.70),
-    ("Rome",        41.90,  12.49), ("Warsaw",      52.23,  21.01),
-    ("Amsterdam",   52.37,   4.90), ("Vienna",      48.21,  16.37),
-    ("Brussels",    50.85,   4.35), ("Prague",      50.08,  14.44),
-    ("Budapest",    47.50,  19.04), ("Stockholm",   59.33,  18.07),
-    ("Copenhagen",  55.68,  12.57), ("Oslo",        59.91,  10.75),
-    ("Helsinki",    60.17,  24.94), ("Athens",      37.98,  23.73),
-    ("Lisbon",      38.72,  -9.14), ("Bucharest",   44.44,  26.10),
-    ("Sofia",       42.70,  23.32), ("Zagreb",      45.81,  15.98),
+    ("London", 51.51, -0.13), ("Paris", 48.85, 2.35),
+    ("Berlin", 52.52, 13.41), ("Madrid", 40.42, -3.70),
+    ("Rome", 41.90, 12.49), ("Warsaw", 52.23, 21.01),
+    ("Amsterdam", 52.37, 4.90), ("Vienna", 48.21, 16.37),
+    ("Brussels", 50.85, 4.35), ("Prague", 50.08, 14.44),
+    ("Budapest", 47.50, 19.04), ("Stockholm", 59.33, 18.07),
+    ("Copenhagen", 55.68, 12.57), ("Oslo", 59.91, 10.75),
+    ("Helsinki", 60.17, 24.94), ("Athens", 37.98, 23.73),
+    ("Lisbon", 38.72, -9.14), ("Bucharest", 44.44, 26.10),
+    ("Sofia", 42.70, 23.32), ("Zagreb", 45.81, 15.98),
 ]
 AQ_VARS = ["pm2_5", "pm10", "european_aqi"]
 
@@ -140,7 +140,7 @@ def run_air_quality() -> None:
     print("AIR QUALITY -- Open-Meteo, 20 European cities, 7-day hourly")
     print("=" * 64)
 
-    end_date   = date.today()
+    end_date = date.today()
     start_date = end_date - timedelta(days=7)
 
     rows: list[pd.DataFrame] = []
@@ -149,11 +149,11 @@ def run_air_quality() -> None:
         r = requests.get(
             "https://air-quality-api.open-meteo.com/v1/air-quality",
             params={
-                "latitude":   lat,
-                "longitude":  lon,
-                "hourly":     ",".join(AQ_VARS),
+                "latitude": lat,
+                "longitude": lon,
+                "hourly": ",".join(AQ_VARS),
                 "start_date": start_date.isoformat(),
-                "end_date":   end_date.isoformat(),
+                "end_date": end_date.isoformat(),
             },
             timeout=15,
         )
@@ -165,12 +165,12 @@ def run_air_quality() -> None:
     print(" done")
 
     aq = pd.concat(rows, ignore_index=True)
-    t0           = pd.to_datetime(aq["time"]).min()
+    t0 = pd.to_datetime(aq["time"]).min()
     aq["time_h"] = (pd.to_datetime(aq["time"]) - t0).dt.total_seconds() / 3600
 
-    X      = aq[AQ_VARS].to_numpy(dtype=float)
+    X = aq[AQ_VARS].to_numpy(dtype=float)
     coords = np.column_stack([aq["lat"], aq["lon"],
-                               np.zeros(len(aq)), aq["time_h"]])
+                              np.zeros(len(aq)), aq["time_h"]])
 
     natural_nan = np.isnan(X).mean()
     X_masked, held_out = _mask_fraction(X, frac=0.20, seed=0)
@@ -205,14 +205,14 @@ def run_air_quality() -> None:
 
 # -- 2. Traffic -- real METR-LA data ------------------------------------------
 
-METR_LA_URL   = "https://drive.switch.ch/index.php/s/Z8cKHAVyiDqkzaG/download"
-METR_LA_HOURS = 72    # 3 days of hourly data (subsampled from 5-min) max is 4 months?
-TRAFFIC_VARS  = ["speed_mph"]
+METR_LA_URL = "https://drive.switch.ch/index.php/s/Z8cKHAVyiDqkzaG/download"
+METR_LA_HOURS = 72  # 3 days of hourly data (subsampled from 5-min) max is 4 months?
+TRAFFIC_VARS = ["speed_mph"]
 
 
 def _load_metr_la() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Download once, cache, and return (speed_df, locations)."""
-    h5_path  = CACHE_DIR / "metr_la.h5"
+    h5_path = CACHE_DIR / "metr_la.h5"
     loc_path = CACHE_DIR / "sensor_locations_la.csv"
 
     if not h5_path.exists():
@@ -225,7 +225,7 @@ def _load_metr_la() -> tuple[pd.DataFrame, pd.DataFrame]:
     else:
         print("  Loading cached METR-LA data")
 
-    speed_df  = pd.read_hdf(h5_path)
+    speed_df = pd.read_hdf(h5_path)
     locations = pd.read_csv(loc_path)
     return speed_df, locations
 
@@ -238,29 +238,29 @@ def run_traffic() -> None:
     speed_df, locations = _load_metr_la()
 
     # Subset: first 3 days at hourly resolution (every 12th 5-min sample)
-    speed_sub = speed_df.iloc[:METR_LA_HOURS * 12 : 12].copy()  # (72, 207)
+    speed_sub = speed_df.iloc[:METR_LA_HOURS * 12: 12].copy()  # (72, 207)
 
     # Zeros encode sensor failures -- treat as missing
-    speed_sub       = speed_sub.replace(0.0, np.nan)
+    speed_sub = speed_sub.replace(0.0, np.nan)
     natural_nan_pct = speed_sub.isna().mean().mean()
 
     # Build (n_samples, n_features) arrays in long format
-    locations  = locations.set_index("sensor_id")
+    locations = locations.set_index("sensor_id")
     sensor_ids = speed_sub.columns.astype(int)
-    lats = locations.loc[sensor_ids, "latitude"].values   # (207,)
+    lats = locations.loc[sensor_ids, "latitude"].values  # (207,)
     lons = locations.loc[sensor_ids, "longitude"].values  # (207,)
 
-    t0  = speed_sub.index[0]
+    t0 = speed_sub.index[0]
     t_h = np.array([(t - t0).total_seconds() / 3600 for t in speed_sub.index])
 
-    n_t, n_s  = speed_sub.shape                          # 72, 207
-    lats_flat = np.repeat(lats, n_t)                     # sensor lat for each row
+    n_t, n_s = speed_sub.shape  # 72, 207
+    lats_flat = np.repeat(lats, n_t)  # sensor lat for each row
     lons_flat = np.repeat(lons, n_t)
-    t_flat    = np.tile(t_h, n_s)                        # hour for each row
-    X         = speed_sub.values.T.flatten().reshape(-1, 1)  # (14904, 1)
+    t_flat = np.tile(t_h, n_s)  # hour for each row
+    X = speed_sub.values.T.flatten().reshape(-1, 1)  # (14904, 1)
 
     coords = np.column_stack([lats_flat, lons_flat,
-                               np.zeros(len(X)), t_flat])
+                              np.zeros(len(X)), t_flat])
 
     X_masked, held_out = _mask_fraction(X, frac=0.25, seed=1)
     print(f"  {len(X)} rows ({n_s} sensors x {METR_LA_HOURS} h hourly) | "
@@ -299,8 +299,7 @@ def run_traffic() -> None:
     )
 
 
-# -- entry point --------------------------------------------------------------
-
+# Entry point
 if __name__ == "__main__":
     target = sys.argv[1].lower() if len(sys.argv) > 1 else "both"
 
