@@ -99,6 +99,13 @@ class MaSTNeT(nn.Module):
         else:
             self.global_means = None
 
+        # Feature mixer: small MLP applied to filled features before token construction
+        self.feature_mixer = nn.Sequential(
+            nn.Linear(n_features, n_features),
+            nn.ReLU(),
+            nn.Linear(n_features, n_features),
+        )
+
         # Input projection
         token_dim = coord_dim + n_features + (n_features if use_masks else 0)
         self.input_proj = nn.Linear(token_dim, d_model)
@@ -128,8 +135,9 @@ class MaSTNeT(nn.Module):
         return torch.where(mask, features, fill)
 
     def _token(self, coords: Tensor, features: Tensor, mask: Tensor) -> Tensor:
-        """Concatenate coordinates, filled features, and optionally the observation mask."""
-        parts = [coords, self._fill(features, mask)]
+        """Fill, mix, then concatenate features with coordinates, and optionally the observation mask."""
+        mixed = self.feature_mixer(self._fill(features, mask))
+        parts = [coords, mixed]
         if self.use_masks:
             parts.append(mask.float())
         return torch.cat(parts, dim=-1)
