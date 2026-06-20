@@ -73,8 +73,12 @@ def preprocess(coords: torch.Tensor, values: torch.Tensor,
     for i, name in enumerate(feature_names):
         col = values_np[:, i]
         observed = ~np.isnan(col)
+
+        # No scaling if no observations
         if observed.sum() == 0:
             continue
+
+        # Use input scalers if given or create new ones
         if name in scaler_dict:
             values_scaled[observed, i] = scaler_dict[name].transform(col[observed].reshape(-1, 1)).flatten()
         else:
@@ -106,7 +110,10 @@ def inverse_transform(values_scaled: np.ndarray, scaler_dict: dict,
         Values restored to the original (unscaled) range.
     """
     out = values_scaled.copy()
+
+    # Iterate over features
     for i, name in enumerate(feature_names):
+        # Unscale
         if name in scaler_dict:
             out[:, i] = scaler_dict[name].inverse_transform(
                 out[:, i].reshape(-1, 1)
