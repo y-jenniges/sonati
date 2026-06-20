@@ -70,21 +70,23 @@ class NeighbourDataset(Dataset):
         self.query_indices = (
             torch.arange(len(values)) if query_indices is None
             else torch.as_tensor(query_indices, dtype=torch.long)
-        )
+        )  # ensure tensor type
 
     def __len__(self) -> int:
         return len(self.query_indices)
 
     def __getitem__(self, idx) -> Dict[str, Any]:
+        # Define query features/mask/coords
         q = self.query_indices[idx]
-
         out: Dict[str, Any] = {
             "query_features": self.values[q],
             "query_mask":     self.mask[q],
             "query_coords":   self.coords[q],
         }
 
+        # Iterate over scopes
         for scope, n_idx in self.graph.items():
+            # Define neighbour features/mask/coords/rel_positions
             nb = n_idx[q]
             out[scope] = {
                 "features":     self.values[nb],
