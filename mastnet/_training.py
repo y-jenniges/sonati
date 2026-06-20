@@ -45,7 +45,7 @@ def cylindrical_feature_mask(
     feature_dim: int,
     size: float = 0.1,
     p: float = 0.3,
-    device: torch.device = "cpu",
+    device: torch.device = torch.device("cpu"),
 ) -> Tensor:
     """
     Block-mask all features of every query point inside a spatial cylinder.
