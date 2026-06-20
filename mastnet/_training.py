@@ -327,7 +327,7 @@ def reconstruct_with_uncertainty(
     stacked_logvars = torch.stack(all_logvars)  # (n_inference, n, F)
 
     mean           = stacked_means.mean(0)
-    epistemic_std  = stacked_means.std(0)
+    epistemic_std  = stacked_means.std(0, correction=0)
     aleatoric_std  = (stacked_logvars.mean(0) * 0.5).exp()   # sqrt(exp(logvar))
 
     return mean, aleatoric_std, epistemic_std
