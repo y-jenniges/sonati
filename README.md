@@ -50,6 +50,14 @@ imputer.fit(X_train, coords_train)
 X_test_filled = imputer.transform(X_test, coords_test)
 ```
 
+To obtain per-point uncertainty estimates alongside imputed values, use `predict_with_uncertainty()`. It runs `n_inference` forward passes with dropout active (MC Dropout) to decompose uncertainty into aleatoric (data noise, from the variance head) and epistemic (model uncertainty, from the spread across passes) components:
+
+```python
+imputer = MaSTNetImputer(n_inference=50, loss_name="hetero")
+imputer.fit(X_train, coords_train)
+X_filled, aleatoric_std, epistemic_std = imputer.predict_with_uncertainty(X_test, coords_test)
+```
+
 ## Coordinate format
 
 `coords` must have exactly four columns in this order:
@@ -82,11 +90,14 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 | `lr` | 1e-3 | Adam learning rate |
 | `batch_size` | 64 | Mini-batch size |
 | `mask_ratio` | 0.5 | Fraction of observed values hidden during training |
+| `cylindrical_mask_size` | 0.1 | Radius of the cylindrical spatial block mask in Cartesian unit-sphere distance; calibrated for global-scale data |
+| `cylindrical_mask_prob` | 0.3 | Per-batch probability of applying the cylindrical block mask; set to `0` for datasets with a small geographic extent |
 | `patience` | 10 | Early-stopping patience (epochs) |
 | `val_frac` | 0.2 | Internal validation fraction |
 | `cyclic_time` | `False` | Cyclic sine/cosine encoding for the time column |
 | `device` | `'auto'` | `'cpu'`, `'cuda'`, or `'auto'` |
 | `seed` | 42 | Random seed |
+| `n_inference` | 50 | MC Dropout forward passes used by `predict_with_uncertainty()` |
 
 ## Running the tests
 
