@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mastnet-imputer"
 version = "0.1.0"
-description = "MaSTNeT: Masked Spatiotemporal Neighbourhood Transformer for imputation of sparse oceanographic data"
+description = "MaSTNeT: Masked Spatio-temporal Neighbourhood Transformer for imputation of sparse oceanographic data"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
