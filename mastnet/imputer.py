@@ -1,4 +1,4 @@
-"""MaSTNetImputer — sklearn-compatible spatiotemporal imputer."""
+"""MaSTNetImputer — sklearn-compatible spatio-temporal imputer."""
 
 import numpy as np
 import torch
@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from mastnet._graph import NeighbourDataset, build_graph
 from mastnet._model import MaSTNeT
 from mastnet._preprocessing import inverse_transform, preprocess
-from mastnet._training import fit, reconstruct
+from mastnet._training import fit, reconstruct, reconstruct_with_uncertainty
 
 
 def _set_seed(seed: int) -> torch.Generator:
@@ -26,10 +26,10 @@ def _set_seed(seed: int) -> torch.Generator:
 
 class MaSTNetImputer(BaseEstimator, TransformerMixin):
     """
-    Sklearn-compatible imputer using MaSTNeT (Masked Spatiotemporal Network).
+    Sklearn-compatible imputer using MaSTNeT (Masked Spatio-temporal Neighbourhood Transformer).
 
-    MaSTNeT reconstructs missing values by attending to k-nearest spatial and
-    temporal neighbours in a factorised cross-attention architecture.  A
+    MaSTNeT reconstructs missing values by attending to k-nearest spatial and j-nearest
+    temporal neighbours in a factorised cross-attention architecture. A
     heteroscedastic output head provides per-point uncertainty estimates.
 
     Coordinates are expected as four columns in this order:
@@ -37,7 +37,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         ``[latitude (°), longitude (°), depth (m), time]``
 
     Latitude and longitude are mapped internally to Cartesian sphere coordinates.
-    Depth and time are MinMax-scaled.  Features are scaled independently per
+    Depth and time are MinMax-scaled. Features are scaled independently per
     variable on observed values only.
 
     Parameters
@@ -57,7 +57,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     dim_feedforward : int, default=128
         Feedforward sublayer width inside each attention block.
     dropout : float, default=0.1
-        Dropout rate (active during training only).
+        Dropout rate.
     use_masks : bool, default=True
         Append the binary observation mask to each token.
     fill_strategy : str, default='zero'
@@ -74,12 +74,22 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         Mini-batch size for training and inference.
     mask_ratio : float, default=0.5
         Fraction of observed values randomly hidden during each training step.
+    cylindrical_mask_size : float, default=0.1
+        Radius of the cylindrical block mask in Cartesian (x, y, z) coordinate
+        space. A cylinder is defined as a horizontal disk at this radius —
+        depth is excluded from the distance, so all depths at a geographic
+        location fall inside together.
+    cylindrical_mask_prob : float, default=0.3
+        Per-batch probability of applying the cylindrical block mask during
+        training. This forces the model to reconstruct entire spatial patches
+        rather than individual points and is important for generalisation.
+        Set to ``0`` to disable.
     patience : int, default=10
         Early-stopping patience (epochs without validation improvement).
     val_frac : float, default=0.2
         Fraction of rows held out for internal validation.
     cyclic_time : bool, default=False
-        Encode time cyclically with sine/cosine.  Useful for monthly data
+        Encode time cyclically with sine/cosine. Useful for monthly data
         (pass month 1–12 as the time column); use False for yearly data.
     device : str, default='auto'
         Compute device: ``'cpu'``, ``'cuda'``, or ``'auto'`` (CUDA when
@@ -87,8 +97,15 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     seed : int, default=42
         Random seed for reproducibility.
     feature_names : list of str or None, default=None
-        Names for the feature columns.  Inferred automatically from a
-        :class:`pandas.DataFrame` input.
+        Optional names for the feature columns supplied by the caller.
+        Inferred automatically from a :class:`pandas.DataFrame` input.
+        This is the *input* parameter; the resolved list is stored as the
+        fitted attribute ``feature_names_`` after :meth:`fit`.
+    n_inference : int, default=1
+        Number of stochastic forward passes used by
+        :meth:`predict_with_uncertainty` to estimate epistemic uncertainty
+        via MC Dropout. Must be ``> 1`` to get a meaningful epistemic
+        estimate; ``1`` produces a deterministic prediction.
 
     Attributes
     ----------
@@ -97,6 +114,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     scaler_dict_ : dict
         Fitted coordinate and feature scalers.
     feature_names_ : list of str
+        Resolved feature names set during :meth:`fit`. Always a plain list
+        of strings regardless of how ``feature_names`` was provided.
     n_features_in_ : int
 
     Examples
@@ -134,34 +153,40 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         lr: float = 1e-3,
         batch_size: int = 64,
         mask_ratio: float = 0.5,
+        cylindrical_mask_size: float = 0.1,
+        cylindrical_mask_prob: float = 0.3,
         patience: int = 10,
         val_frac: float = 0.2,
         cyclic_time: bool = False,
         device: str = "auto",
         seed: int = 42,
         feature_names=None,
+        n_inference: int = 1,
     ):
-        self.n_neighbours_space = n_neighbours_space
-        self.n_neighbours_time  = n_neighbours_time
-        self.d_model            = d_model
-        self.nhead            = nhead
-        self.n_spatial_layers = n_spatial_layers
-        self.n_temporal_layers = n_temporal_layers
-        self.dim_feedforward  = dim_feedforward
-        self.dropout          = dropout
-        self.use_masks        = use_masks
-        self.fill_strategy    = fill_strategy
-        self.loss_name        = loss_name
-        self.max_epochs       = max_epochs
-        self.lr               = lr
-        self.batch_size       = batch_size
-        self.mask_ratio       = mask_ratio
-        self.patience         = patience
-        self.val_frac         = val_frac
-        self.cyclic_time      = cyclic_time
-        self.device           = device
-        self.seed             = seed
-        self.feature_names    = feature_names
+        self.n_neighbours_space    = n_neighbours_space
+        self.n_neighbours_time     = n_neighbours_time
+        self.d_model               = d_model
+        self.nhead                 = nhead
+        self.n_spatial_layers      = n_spatial_layers
+        self.n_temporal_layers     = n_temporal_layers
+        self.dim_feedforward       = dim_feedforward
+        self.dropout               = dropout
+        self.use_masks             = use_masks
+        self.fill_strategy         = fill_strategy
+        self.loss_name             = loss_name
+        self.max_epochs            = max_epochs
+        self.lr                    = lr
+        self.batch_size            = batch_size
+        self.mask_ratio            = mask_ratio
+        self.cylindrical_mask_size = cylindrical_mask_size
+        self.cylindrical_mask_prob = cylindrical_mask_prob
+        self.patience              = patience
+        self.val_frac              = val_frac
+        self.cyclic_time           = cyclic_time
+        self.device                = device
+        self.seed                  = seed
+        self.feature_names         = feature_names
+        self.n_inference           = n_inference
 
     def _resolve_device(self) -> torch.device:
         if self.device == "auto":
@@ -186,14 +211,14 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
     def fit(self, X, coords, y=None):
         """
-        Fit MaSTNeT on spatiotemporal data.
+        Fit MaSTNeT on spatio-temporal data.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
             Feature matrix; ``NaN`` marks missing values.
         coords : array-like of shape (n_samples, 4)
-            Spatiotemporal coordinates as ``[lat (°), lon (°), depth (m), time]``.
+            Spatio-temporal coordinates as ``[lat (°), lon (°), depth (m), time]``.
         y : ignored
 
         Returns
@@ -271,6 +296,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             max_epochs=self.max_epochs, lr=self.lr,
             mask_ratio=self.mask_ratio, patience=self.patience,
             device=device, loss_name=self.loss_name,
+            cylindrical_mask_size=self.cylindrical_mask_size,
+            cylindrical_mask_prob=self.cylindrical_mask_prob,
         )
 
         self.device_       = device
@@ -296,6 +323,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X      = np.asarray(X,      dtype=float)
         coords = np.asarray(coords, dtype=float)
 
+        # Pre-process input data
         coords_scaled, values_scaled, _ = preprocess(
             torch.as_tensor(coords, dtype=torch.float32),
             torch.as_tensor(X,      dtype=torch.float32),
@@ -303,9 +331,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             scaler_dict=self.scaler_dict_,
         )
 
+        # Build neighbourhood graphs
         graph  = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
+        # Unscale predictions
         preds_np = inverse_transform(
             reconstruct(self.model_, loader, self.device_).numpy(),
             self.scaler_dict_, self.feature_names_,
@@ -328,9 +358,13 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         -------
         X_imputed : ndarray of shape (n_samples, n_features)
         """
+        # Fit model
         self.fit(X, coords)
 
+        # Convert predictions to float array
         X = np.asarray(X, dtype=float)
+
+        # Unscale predictions
         preds_np = inverse_transform(
             reconstruct(self.model_, self.full_loader_, self.device_).numpy(),
             self.scaler_dict_, self.feature_names_,
@@ -339,3 +373,56 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X_out = X.copy()
         X_out[np.isnan(X_out)] = preds_np[np.isnan(X_out)]
         return X_out
+
+    def predict_with_uncertainty(self, X, coords):
+        """
+        Impute missing values and return per-point uncertainty estimates.
+
+        Uses MC Dropout: the model is run ``n_inference`` times in train mode
+        (dropout active). The spread of predictions across runs is the epistemic
+        uncertainty; the model's predicted log-variance head gives aleatoric
+        uncertainty.
+
+        Requires ``n_inference > 1`` to produce a meaningful epistemic estimate;
+        with ``n_inference=1`` ``epistemic_std`` will be all zeros.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+        coords : array-like of shape (n_samples, 4)
+
+        Returns
+        -------
+        X_imputed : ndarray of shape (n_samples, n_features)
+            Copy of ``X`` with ``NaN`` positions filled by the mean prediction.
+        aleatoric_std : ndarray of shape (n_samples, n_features)
+            Per-point aleatoric (data) uncertainty: ``sqrt(mean(exp(logvar)))``.
+        epistemic_std : ndarray of shape (n_samples, n_features)
+            Per-point epistemic (model) uncertainty: std of means across MC passes.
+        """
+        check_is_fitted(self, ["model_", "scaler_dict_"])
+
+        X      = np.asarray(X,      dtype=float)
+        coords = np.asarray(coords, dtype=float)
+
+        coords_scaled, values_scaled, _ = preprocess(
+            torch.as_tensor(coords, dtype=torch.float32),
+            torch.as_tensor(X,      dtype=torch.float32),
+            self.feature_names_, self.cyclic_time,
+            scaler_dict=self.scaler_dict_,
+        )
+
+        graph  = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
+        loader = self._make_loader(coords_scaled, values_scaled, graph)
+
+        mean_t, aleatoric_t, epistemic_t = reconstruct_with_uncertainty(
+            self.model_, loader, self.device_, n_inference=self.n_inference
+        )
+
+        mean_np      = inverse_transform(mean_t.numpy(), self.scaler_dict_, self.feature_names_)
+        aleatoric_np = aleatoric_t.numpy()
+        epistemic_np = epistemic_t.numpy()
+
+        X_out = X.copy()
+        X_out[np.isnan(X_out)] = mean_np[np.isnan(X_out)]
+        return X_out, aleatoric_np, epistemic_np
