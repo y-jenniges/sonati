@@ -10,9 +10,12 @@ class _CrossAttentionBlock(nn.Module):
 
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float):
         super().__init__()
-        self.attn  = nn.MultiheadAttention(d_model, nhead, batch_first=True, dropout=dropout)
+        # Multi-head attention (only query attends to neighbours)
+        self.attn  = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, batch_first=True, dropout=dropout)
+
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
+
         self.mlp   = nn.Sequential(
             nn.Linear(d_model, dim_feedforward),
             nn.GELU(),
@@ -29,7 +32,7 @@ class _CrossAttentionBlock(nn.Module):
 
 class MaSTNeT(nn.Module):
     """
-    Masked Spatiotemporal Neighbourhood Transformer.
+    Masked Spatio-temporal Neighbourhood Transformer.
 
     Reconstructs missing values in spatiotemporal point-cloud data by attending
     to k-nearest spatial neighbours first, then k-nearest temporal neighbours
@@ -96,22 +99,25 @@ class MaSTNeT(nn.Module):
         else:
             self.global_means = None
 
+        # Input projection
         token_dim = coord_dim + n_features + (n_features if use_masks else 0)
         self.input_proj = nn.Linear(token_dim, d_model)
 
+        # Spatial layers
         self.spatial_layers = nn.ModuleList([
             _CrossAttentionBlock(d_model, nhead, dim_feedforward, dropout)
             for _ in range(n_spatial_layers)
         ])
+
+        # Temporal layers
         self.temporal_layers = nn.ModuleList([
             _CrossAttentionBlock(d_model, nhead, dim_feedforward, dropout)
             for _ in range(n_temporal_layers)
         ])
 
+        # Output heads
         self.mean_head = nn.Linear(d_model, n_features)
         self.logvar_head = nn.Linear(d_model, n_features)
-
-    # ------------------------------------------------------------------
 
     def _fill(self, features: Tensor, mask: Tensor) -> Tensor:
         """Replace unobserved positions with zeros or global feature means."""
@@ -147,15 +153,22 @@ class MaSTNeT(nn.Module):
         pred_mean : Tensor (B, F)
         pred_logvar : Tensor (B, F)
         """
+        # Project query token
         q = self.input_proj(
             self._token(batch["query_coords"], batch["query_features"], batch["query_mask"])
         ).unsqueeze(1)  # (B, 1, D)
 
+        # Iterate over scopes
         for scope, layers in (("space", self.spatial_layers), ("time", self.temporal_layers)):
             nb = batch[scope]
+
+            # Project neighbour tokens
             n = self.input_proj(self._token(nb["coords"], nb["features"], nb["mask"]))
+
+            # Apply layers
             for layer in layers:
                 q = layer(q, n)
 
+        # Only return query token
         h = q[:, 0]  # (B, D)
         return self.mean_head(h), self.logvar_head(h)
