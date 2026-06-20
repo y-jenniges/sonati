@@ -21,7 +21,7 @@ def _dummy_data(n: int = 300, n_features: int = 3, seed: int = 0):
 
 
 # Hyperparameters for a quick, low-capacity test
-_FAST = dict(max_epochs=2, n_neighbours_space=10, n_neighbours_time=10, patience=2, d_model=16, dim_feedforward=32)
+_FAST = dict(max_epochs=2, n_neighbours_space=10, n_neighbours_time=10, patience=2, d_model=16, dim_feedforward=32, n_inference=2)
 
 
 def test_import():
@@ -56,6 +56,24 @@ def test_observed_values_unchanged():
     X_filled = imputer.fit_transform(X, coords)
     observed = ~np.isnan(X)
     np.testing.assert_array_equal(X_filled[observed], X[observed])
+
+
+def test_predict_with_uncertainty():
+    # Check if prediction with and without uncertainty work as intended
+    X, coords = _dummy_data()
+    imputer = MaSTNetImputer(**_FAST)
+    imputer.fit(X, coords)
+    X_filled, aleatoric_std, epistemic_std = imputer.predict_with_uncertainty(X, coords)
+    assert X_filled.shape == X.shape
+    assert aleatoric_std.shape == X.shape
+    assert epistemic_std.shape == X.shape
+    assert not np.isnan(X_filled).any()
+
+    # With n_inference=1, epistemic std must be zero (single deterministic pass)
+    imputer_det = MaSTNetImputer(**{**_FAST, "n_inference": 1})
+    imputer_det.fit(X, coords)
+    _, _, epistemic_det = imputer_det.predict_with_uncertainty(X, coords)
+    assert (epistemic_det == 0).all()
 
 
 def test_cyclic_time():
