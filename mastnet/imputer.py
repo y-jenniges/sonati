@@ -335,7 +335,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         graph  = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
-        # Unscale predictions
+        # Predict and unscale
         preds_np = inverse_transform(
             reconstruct(self.model_, loader, self.device_).numpy(),
             self.scaler_dict_, self.feature_names_,
@@ -405,6 +405,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X      = np.asarray(X,      dtype=float)
         coords = np.asarray(coords, dtype=float)
 
+        # Pre-process input data
         coords_scaled, values_scaled, _ = preprocess(
             torch.as_tensor(coords, dtype=torch.float32),
             torch.as_tensor(X,      dtype=torch.float32),
@@ -412,14 +413,19 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             scaler_dict=self.scaler_dict_,
         )
 
+        # Build neighbourhood graphs
         graph  = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
+        # Predict mean, epistemic and aleatoric uncertainties
         mean_t, aleatoric_t, epistemic_t = reconstruct_with_uncertainty(
             self.model_, loader, self.device_, n_inference=self.n_inference
         )
 
+        # Unscale predictions
         mean_np      = inverse_transform(mean_t.numpy(), self.scaler_dict_, self.feature_names_)
+
+        # Convert to numpy
         aleatoric_np = aleatoric_t.numpy()
         epistemic_np = epistemic_t.numpy()
 
