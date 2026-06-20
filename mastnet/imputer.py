@@ -101,7 +101,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         Inferred automatically from a :class:`pandas.DataFrame` input.
         This is the *input* parameter; the resolved list is stored as the
         fitted attribute ``feature_names_`` after :meth:`fit`.
-    n_inference : int, default=1
+    n_inference : int, default=50
         Number of stochastic forward passes used by
         :meth:`predict_with_uncertainty` to estimate epistemic uncertainty
         via MC Dropout. Must be ``> 1`` to get a meaningful epistemic
@@ -161,7 +161,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         device: str = "auto",
         seed: int = 42,
         feature_names=None,
-        n_inference: int = 1,
+        n_inference: int = 50,
     ):
         self.n_neighbours_space    = n_neighbours_space
         self.n_neighbours_time     = n_neighbours_time
