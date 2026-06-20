@@ -1,5 +1,5 @@
 """
-Real-world tests of MaSTNetImputer on two spatio-temporal domains.
+Real-world tests of MaSTNeT imputer on two spatio-temporal domains.
 
 Usage
 -----
@@ -78,12 +78,19 @@ def _compute_metrics(X_true: np.ndarray, X_pred: np.ndarray,
     """MAE and NMAE per feature and overall, evaluated on held-out positions."""
     mae: dict[str, float] = {}
     nmae: dict[str, float] = {}
+
+    # Iterate over features
     for i, name in enumerate(feature_names):
+        # Filter values
         col_mask = held_out[:, i]
         true_vals = X_true[col_mask, i]
         pred_vals = X_pred[col_mask, i]
+
+        # Compute metrics
         mae[name] = float(np.abs(pred_vals - true_vals).mean())
         nmae[name] = float(mae[name] / np.abs(true_vals).mean() * 100)
+
+    # Aggregate metrics
     mae["overall"] = float(np.abs(X_pred[held_out] - X_true[held_out]).mean())
     nmae["overall"] = float(mae["overall"] / np.abs(X_true[held_out]).mean() * 100)
     return {"mae": mae, "nmae": nmae}
@@ -94,6 +101,7 @@ def _print_tables(results: dict[str, dict],
                   mae_label: str = "MAE  (lower is better)",
                   nmae_label: str = "NMAE %  = MAE / mean(|true|) x 100  (lower is better)",
                   ref_note: str = "") -> None:
+    """Print results."""
     col_names = feature_names + ["overall"]
     col_w = max(10, max(len(n) for n in col_names) + 2)
     meth_w = max(len(m) for m in results) + 2
