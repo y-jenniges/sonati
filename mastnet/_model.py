@@ -137,7 +137,8 @@ class MaSTNeT(nn.Module):
     def _token(self, coords: Tensor, features: Tensor, mask: Tensor) -> Tensor:
         """Fill, mix, then concatenate features with coordinates, and optionally the observation mask."""
         filled = self._fill(features, mask)
-        mixed = filled + self.feature_mixer(filled)  # residual: preserves signal when mixer is unhelpful
+        # mixed = filled + self.feature_mixer(filled)  # residual: preserves signal when mixer is unhelpful
+        mixed = self.feature_mixer(filled)
         parts = [coords, mixed]
         if self.use_masks:
             parts.append(mask.float())
