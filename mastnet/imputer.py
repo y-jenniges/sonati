@@ -106,6 +106,15 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         :meth:`predict_with_uncertainty` to estimate epistemic uncertainty
         via MC Dropout. Must be ``> 1`` to get a meaningful epistemic
         estimate; ``1`` produces a deterministic prediction.
+    val_method : str, default='random'
+        How to create the internal validation split: ``'random'`` draws a
+        uniform random subset; ``'block'`` assigns points to spatial lat/lon
+        blocks and holds out a contiguous set of blocks, preventing spatial
+        autocorrelation from leaking into the validation signal (recommended
+        for geographic data).
+    block_size_deg : float, default=15.0
+        Width/height of each spatial block in degrees.  Only used when
+        ``val_method='block'``.
 
     Attributes
     ----------
@@ -137,56 +146,79 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     """
 
     def __init__(
-        self,
-        n_neighbours_space: int = 30,
-        n_neighbours_time: int = 30,
-        d_model: int = 64,
-        nhead: int = 4,
-        n_spatial_layers: int = 3,
-        n_temporal_layers: int = 3,
-        dim_feedforward: int = 128,
-        dropout: float = 0.1,
-        use_masks: bool = True,
-        fill_strategy: str = "zero",
-        loss_name: str = "hetero",
-        max_epochs: int = 100,
-        lr: float = 1e-3,
-        batch_size: int = 64,
-        mask_ratio: float = 0.5,
-        cylindrical_mask_size: float = 0.1,
-        cylindrical_mask_prob: float = 0.3,
-        patience: int = 10,
-        val_frac: float = 0.2,
-        cyclic_time: bool = False,
-        device: str = "auto",
-        seed: int = 42,
-        feature_names=None,
-        n_inference: int = 50,
+            self,
+            n_neighbours_space: int = 30,
+            n_neighbours_time: int = 30,
+            d_model: int = 64,
+            nhead: int = 4,
+            n_spatial_layers: int = 3,
+            n_temporal_layers: int = 3,
+            dim_feedforward: int = 128,
+            dropout: float = 0.1,
+            use_masks: bool = True,
+            fill_strategy: str = "zero",
+            loss_name: str = "hetero",
+            max_epochs: int = 100,
+            lr: float = 1e-3,
+            batch_size: int = 64,
+            mask_ratio: float = 0.5,
+            cylindrical_mask_size: float = 0.1,
+            cylindrical_mask_prob: float = 0.3,
+            patience: int = 10,
+            val_frac: float = 0.2,
+            cyclic_time: bool = False,
+            device: str = "auto",
+            seed: int = 42,
+            feature_names=None,
+            n_inference: int = 50,
+            val_method: str = "random",
+            block_size_deg: float = 15.0,
     ):
-        self.n_neighbours_space    = n_neighbours_space
-        self.n_neighbours_time     = n_neighbours_time
-        self.d_model               = d_model
-        self.nhead                 = nhead
-        self.n_spatial_layers      = n_spatial_layers
-        self.n_temporal_layers     = n_temporal_layers
-        self.dim_feedforward       = dim_feedforward
-        self.dropout               = dropout
-        self.use_masks             = use_masks
-        self.fill_strategy         = fill_strategy
-        self.loss_name             = loss_name
-        self.max_epochs            = max_epochs
-        self.lr                    = lr
-        self.batch_size            = batch_size
-        self.mask_ratio            = mask_ratio
+        self.n_neighbours_space = n_neighbours_space
+        self.n_neighbours_time = n_neighbours_time
+        self.d_model = d_model
+        self.nhead = nhead
+        self.n_spatial_layers = n_spatial_layers
+        self.n_temporal_layers = n_temporal_layers
+        self.dim_feedforward = dim_feedforward
+        self.dropout = dropout
+        self.use_masks = use_masks
+        self.fill_strategy = fill_strategy
+        self.loss_name = loss_name
+        self.max_epochs = max_epochs
+        self.lr = lr
+        self.batch_size = batch_size
+        self.mask_ratio = mask_ratio
         self.cylindrical_mask_size = cylindrical_mask_size
         self.cylindrical_mask_prob = cylindrical_mask_prob
-        self.patience              = patience
-        self.val_frac              = val_frac
-        self.cyclic_time           = cyclic_time
-        self.device                = device
-        self.seed                  = seed
-        self.feature_names         = feature_names
-        self.n_inference           = n_inference
+        self.patience = patience
+        self.val_frac = val_frac
+        self.cyclic_time = cyclic_time
+        self.device = device
+        self.seed = seed
+        self.feature_names = feature_names
+        self.n_inference = n_inference
+        self.val_method = val_method
+        self.block_size_deg = block_size_deg
+
+    def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return (train_idx, val_idx) according to ``val_method``."""
+        idx = np.arange(len(coords_raw))
+        if self.val_method == "block":
+            lat = coords_raw[:, 0]
+            lon = coords_raw[:, 1]
+            lat_block = np.floor(lat / self.block_size_deg).astype(int)
+            lon_block = np.floor(lon / self.block_size_deg).astype(int)
+            block_ids = lat_block * 10000 + lon_block
+            unique_blocks = np.unique(block_ids)
+            rng = np.random.default_rng(self.seed)
+            rng.shuffle(unique_blocks)
+            n_val = max(1, int(len(unique_blocks) * self.val_frac))
+            val_set = set(unique_blocks[:n_val].tolist())
+            in_val = np.array([b in val_set for b in block_ids])
+            return idx[~in_val], idx[in_val]
+        else:
+            return train_test_split(idx, test_size=self.val_frac, random_state=self.seed)
 
     def _resolve_device(self) -> torch.device:
         if self.device == "auto":
@@ -226,20 +258,18 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self
         """
         self.feature_names_ = self._resolve_feature_names(X)
-        X      = np.asarray(X,      dtype=float)
+        X = np.asarray(X, dtype=float)
         coords = np.asarray(coords, dtype=float)
 
-        device    = self._resolve_device()
+        device = self._resolve_device()
         generator = _set_seed(self.seed)
 
         # Train / validation split
-        idx = np.arange(len(X))
-        train_idx, val_idx = train_test_split(idx, test_size=self.val_frac,
-                                              random_state=self.seed)
+        train_idx, val_idx = self._make_train_val_split(coords)
 
         # Preprocess: fit scalers on training rows, transform full dataset
         coords_t = torch.as_tensor(coords, dtype=torch.float32)
-        values_t = torch.as_tensor(X,      dtype=torch.float32)
+        values_t = torch.as_tensor(X, dtype=torch.float32)
 
         _, _, scaler_dict = preprocess(
             coords_t[train_idx], values_t[train_idx],
@@ -252,9 +282,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         )
         mask_full = ~torch.isnan(values_full)
 
-        self.scaler_dict_  = scaler_dict
-        self.coords_full_  = coords_full
-        self.values_full_  = values_full
+        self.scaler_dict_ = scaler_dict
+        self.coords_full_ = coords_full
+        self.values_full_ = values_full
 
         # Global means for fill_strategy='mean'
         obs = values_full.clone()
@@ -271,8 +301,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         train_loader = self._make_loader(coords_full, values_full, graph,
                                          indices=train_idx, shuffle=True,
                                          generator=generator)
-        val_loader   = self._make_loader(coords_full, values_full, graph,
-                                         indices=val_idx)
+        val_loader = self._make_loader(coords_full, values_full, graph,
+                                       indices=val_idx)
         self.full_loader_ = self._make_loader(coords_full, values_full, graph)
 
         # Model
@@ -300,7 +330,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             cylindrical_mask_prob=self.cylindrical_mask_prob,
         )
 
-        self.device_       = device
+        self.device_ = device
         self.n_features_in_ = X.shape[1]
         return self
 
@@ -320,19 +350,19 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         """
         check_is_fitted(self, ["model_", "scaler_dict_"])
 
-        X      = np.asarray(X,      dtype=float)
+        X = np.asarray(X, dtype=float)
         coords = np.asarray(coords, dtype=float)
 
         # Pre-process input data
         coords_scaled, values_scaled, _ = preprocess(
             torch.as_tensor(coords, dtype=torch.float32),
-            torch.as_tensor(X,      dtype=torch.float32),
+            torch.as_tensor(X, dtype=torch.float32),
             self.feature_names_, self.cyclic_time,
             scaler_dict=self.scaler_dict_,
         )
 
         # Build neighbourhood graphs
-        graph  = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
+        graph = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
         # Predict and unscale
@@ -402,19 +432,19 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         """
         check_is_fitted(self, ["model_", "scaler_dict_"])
 
-        X      = np.asarray(X,      dtype=float)
+        X = np.asarray(X, dtype=float)
         coords = np.asarray(coords, dtype=float)
 
         # Pre-process input data
         coords_scaled, values_scaled, _ = preprocess(
             torch.as_tensor(coords, dtype=torch.float32),
-            torch.as_tensor(X,      dtype=torch.float32),
+            torch.as_tensor(X, dtype=torch.float32),
             self.feature_names_, self.cyclic_time,
             scaler_dict=self.scaler_dict_,
         )
 
         # Build neighbourhood graphs
-        graph  = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
+        graph = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
         # Predict mean, epistemic and aleatoric uncertainties
@@ -423,7 +453,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         )
 
         # Unscale predictions
-        mean_np      = inverse_transform(mean_t.numpy(), self.scaler_dict_, self.feature_names_)
+        mean_np = inverse_transform(mean_t.numpy(), self.scaler_dict_, self.feature_names_)
 
         # Convert to numpy
         aleatoric_np = aleatoric_t.numpy()
