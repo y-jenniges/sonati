@@ -1,6 +1,7 @@
-"""Smoke tests — verify the package installs and runs end-to-end."""
+"""Functional tests for MaSTNetImputer."""
 
 import numpy as np
+import pytest
 from mastnet import MaSTNetImputer
 
 
@@ -20,8 +21,12 @@ def _dummy_data(n: int = 300, n_features: int = 3, seed: int = 0):
     return X, coords
 
 
-# Hyperparameters for a quick, low-capacity test
-_FAST = dict(max_epochs=2, n_neighbours_space=10, n_neighbours_time=10, patience=2, d_model=16, dim_feedforward=32, n_inference=2)
+# Minimal hyperparameters for fast tests; verbose=False keeps test output clean
+_FAST = dict(
+    max_epochs=2, n_neighbours_space=10, n_neighbours_time=10,
+    patience=2, d_model=16, dim_feedforward=32, n_inference=2,
+    verbose=False,
+)
 
 
 def test_import():
@@ -90,3 +95,39 @@ def test_cyclic_time():
     ])
     X_filled = MaSTNetImputer(**_FAST, cyclic_time=True).fit_transform(X, coords)
     assert not np.isnan(X_filled).any()
+
+
+def test_val_method_block():
+    # Check if block validation works
+    X, coords = _dummy_data()
+    X_filled = MaSTNetImputer(**_FAST, val_method="block").fit_transform(X, coords)
+    assert X_filled.shape == X.shape
+    assert not np.isnan(X_filled).any()
+
+
+def test_fill_strategy_mean():
+    # Test mean filling
+    X, coords = _dummy_data()
+    X_filled = MaSTNetImputer(**_FAST, fill_strategy="mean").fit_transform(X, coords)
+    assert X_filled.shape == X.shape
+    assert not np.isnan(X_filled).any()
+
+
+def test_sklearn_api():
+    # Check sklearn compatibility
+    from sklearn.base import clone
+    imputer = MaSTNetImputer(**_FAST)
+    params = imputer.get_params()
+    assert "max_epochs" in params
+    assert "verbose" in params
+    cloned = clone(imputer)
+    assert cloned.get_params() == params
+
+
+def test_not_fitted_error():
+    # Check compatibility with NotFittedError
+    from sklearn.exceptions import NotFittedError
+    imputer = MaSTNetImputer(**_FAST)
+    X, coords = _dummy_data()
+    with pytest.raises(NotFittedError):
+        imputer.transform(X, coords)
