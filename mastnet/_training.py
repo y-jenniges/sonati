@@ -9,6 +9,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import logging
+from time import strftime
 
 logger = logging.getLogger(__name__)
 
@@ -421,7 +422,7 @@ def fit(
         should_stop = stopper(val_loss)
 
         msg = (
-            f"Epoch {epoch:03d}/{max_epochs}"
+            f"[{strftime('%d-%m-%Y %H:%M:%S')}] Epoch {epoch:03d}/{max_epochs}"
             f" | train={train_loss:.4f} | val={val_loss:.4f}"
             f" | patience {stopper.counter}/{stopper.patience}"
         )
