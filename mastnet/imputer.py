@@ -1,4 +1,4 @@
-"""MaSTNetImputer — sklearn-compatible spatio-temporal imputer."""
+"""MaSTNetImputer - sklearn-compatible spatio-temporal imputer."""
 
 import logging
 from time import time
@@ -80,7 +80,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         Fraction of observed values randomly hidden during each training step.
     cylindrical_mask_size : float, default=0.1
         Radius of the cylindrical block mask in Cartesian (x, y, z) coordinate
-        space. A cylinder is defined as a horizontal disk at this radius —
+        space. A cylinder is defined as a horizontal disk at this radius -
         depth is excluded from the distance, so all depths at a geographic
         location fall inside together.
     cylindrical_mask_prob : float, default=0.3
@@ -117,11 +117,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         autocorrelation from leaking into the validation signal (recommended
         for geographic data).
     block_size_deg : float, default=15.0
-        Width/height of each spatial block in degrees.  Only used when
+        Width/height of each spatial block in degrees. Only used when
         ``val_method='block'``.
     verbose : bool, default=True
         Show progress bars and per-epoch log lines during training and
-        inference.  Set to ``False`` to silence all console output (e.g.
+        inference. Set to ``False`` to silence all console output (e.g.
         inside a grid search or cross-validation loop).
 
     Attributes

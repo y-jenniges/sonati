@@ -14,30 +14,30 @@ Requirements (beyond mastnet-imputer deps)
 
 Datasets
 --------
-1. Air quality — Open-Meteo free API (no key required)
+1. Air quality - Open-Meteo free API (no key required)
    20 European city-centre locations, last 7 days hourly.
    Variables: PM2.5 (μg/m³), PM10 (μg/m³), European AQI.
    https://open-meteo.com/en/docs/air-quality-api
 
-2. Traffic — METR-LA (real data, Los Angeles freeway sensors)
+2. Traffic - METR-LA (real data, Los Angeles freeway sensors)
    207 inductive-loop detector positions from the DCRNN paper
-   (Yaguang Li et al., 2018).  Speed in mph, 5-min intervals.
+   (Yaguang Li et al., 2018). Speed in mph, 5-min intervals.
    Downloaded from SwitchDrive (Swiss research infrastructure),
    cached locally after first run.
    Source used by torch-spatiotemporal (Cini et al., 2022).
 
 Baselines
 ---------
-  Mean fill  — per-feature column mean. Ignores all structure.
-  KNN (feat) — sklearn KNNImputer(k=5) in feature space.
+  Mean fill - per-feature column mean. Ignores all structure.
+  KNN (feat) - sklearn KNNImputer(k=5) in feature space.
                Finds nearest neighbours by feature similarity only;
                ignores lat/lon/time entirely.
-  MaSTNet    — spatiotemporal cross-attention (this package).
+  MaSTNet - spatiotemporal cross-attention (this package).
 
 Metrics
 -------
-  MAE  — mean absolute error in original units.
-  NMAE — normalised MAE = MAE / mean(|true values|) x 100 %.
+  MAE - mean absolute error in original units.
+  NMAE - normalised MAE = MAE / mean(|true values|) x 100 %.
          Allows comparison across features with different scales
          and with published benchmarks.
 """

@@ -53,10 +53,10 @@ class NeighbourDataset(Dataset):
 
     Parameters
     ----------
-    coords : Tensor (n, coord_dim)  — preprocessed (scaled) coordinates
-    values : Tensor (n, n_features) — preprocessed features, NaN = missing
-    graph  : dict {"space": (n, k), "time": (n, k)}  — precomputed neighbour indices
-    query_indices : array-like or None  — subset of rows to use as queries;
+    coords : Tensor (n, coord_dim) - preprocessed (scaled) coordinates
+    values : Tensor (n, n_features) - preprocessed features, NaN = missing
+    graph  : dict {"space": (n, k), "time": (n, k)} - precomputed neighbour indices
+    query_indices : array-like or None - subset of rows to use as queries;
                     None uses all rows
     """
 

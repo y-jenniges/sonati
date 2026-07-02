@@ -1,4 +1,4 @@
-"""MaSTNeT model — factorised space-time cross-attention imputer."""
+"""MaSTNeT model - factorised space-time cross-attention imputer."""
 
 import torch
 import torch.nn as nn
@@ -68,7 +68,7 @@ class MaSTNeT(nn.Module):
         ``'zero'`` fills with 0; ``'mean'`` fills with the per-feature global
         mean estimated from training data.
     global_means : list[float] or None
-        Per-feature means used when ``fill_strategy='mean'``.  Registered as a
+        Per-feature means used when ``fill_strategy='mean'``. Registered as a
         buffer and automatically moved to the correct device.
     """
 
@@ -151,12 +151,12 @@ class MaSTNeT(nn.Module):
         Parameters
         ----------
         batch : dict with keys
-            - ``query_features``  (B, F)
-            - ``query_mask``      (B, F) bool — True = observed
-            - ``query_coords``    (B, C)
-            - ``space``           dict with ``features`` (B, K, F), ``mask`` (B, K, F),
+            - ``query_features`` (B, F)
+            - ``query_mask`` (B, F) bool - True = observed
+            - ``query_coords`` (B, C)
+            - ``space`` dict with ``features`` (B, K, F), ``mask`` (B, K, F),
                                   ``coords`` (B, K, C)
-            - ``time``            same structure as ``space``
+            - ``time`` same structure as ``space``
 
         Returns
         -------

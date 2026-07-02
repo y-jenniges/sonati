@@ -13,7 +13,7 @@ def preprocess(coords: torch.Tensor, values: torch.Tensor,
 
     Coordinates are expected as columns [latitude (°), longitude (°), depth (m), time].
     Latitude and longitude are mapped to Cartesian coordinates on the unit sphere,
-    then shifted to [0, 1].  Depth and time are MinMax-scaled using scalers fitted
+    then shifted to [0, 1]. Depth and time are MinMax-scaled using scalers fitted
     on the data passed to this call (or provided via ``scaler_dict``).
 
     Features are scaled independently per variable using MinMaxScaler fitted on
@@ -22,16 +22,16 @@ def preprocess(coords: torch.Tensor, values: torch.Tensor,
     Parameters
     ----------
     coords : torch.Tensor of shape (n, 4)
-    values : torch.Tensor of shape (n, n_features)  — NaN marks missing values
-    feature_names : list of str  — one name per feature column (used as scaler keys)
-    cyclic_time : bool  — encode time with sine/cosine instead of linear MinMax
-    scaler_dict : dict or None  — if provided, reuse these fitted scalers
+    values : torch.Tensor of shape (n, n_features) - NaN marks missing values
+    feature_names : list of str - one name per feature column (used as scaler keys)
+    cyclic_time : bool - encode time with sine/cosine instead of linear MinMax
+    scaler_dict : dict or None - if provided, reuse these fitted scalers
 
     Returns
     -------
     coords_scaled : torch.Tensor of shape (n, 5) or (n, 6) for cyclic_time
     values_scaled : torch.Tensor of shape (n, n_features)
-    scaler_dict : dict  — scalers keyed by "depth", "time", and each feature name
+    scaler_dict : dict - scalers keyed by "depth", "time", and each feature name
     """
     if scaler_dict is None:
         scaler_dict = {}
@@ -54,7 +54,7 @@ def preprocess(coords: torch.Tensor, values: torch.Tensor,
         scaler_dict["depth"] = MinMaxScaler().fit(depth.reshape(-1, 1))
         depth_s = scaler_dict["depth"].transform(depth.reshape(-1, 1))
 
-    # Time — linear MinMax or cyclic sine/cosine
+    # Time - linear MinMax or cyclic sine/cosine
     if cyclic_time:
         # Assumes time is a month index (1–12); wraps cyclically
         t = 2 * np.pi * time / 12
@@ -68,7 +68,7 @@ def preprocess(coords: torch.Tensor, values: torch.Tensor,
 
     coords_scaled = np.column_stack([x, y, z, depth_s, time_cols])
 
-    # Features — per-variable MinMaxScaler on observed values only
+    # Features - per-variable MinMaxScaler on observed values only
     values_scaled = np.full_like(values_np, np.nan)
     for i, name in enumerate(feature_names):
         col = values_np[:, i]

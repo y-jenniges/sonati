@@ -121,7 +121,7 @@ def _apply_random_mask(
     loss_mask : Tensor of shape (B, F)
         Boolean mask selecting positions to compute reconstruction loss on.
     """
-    q_mask = batch["query_mask"]  # (B, F) bool — truly observed
+    q_mask = batch["query_mask"]  # (B, F) bool - truly observed
     B, F = q_mask.shape
 
     # Random per-sample masking
@@ -395,7 +395,7 @@ def fit(
         Per-batch probability of applying the cylindrical block mask during
         training **and** validation. Set to ``0`` to disable.
     verbose : bool, default=True
-        Show tqdm progress bars and per-epoch log lines.  Set to ``False``
+        Show tqdm progress bars and per-epoch log lines. Set to ``False``
         to suppress all console output (useful inside grid searches).
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
