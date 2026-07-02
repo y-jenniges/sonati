@@ -1,11 +1,15 @@
 """MaSTNetImputer — sklearn-compatible spatio-temporal imputer."""
 
+import logging
+from time import time
 import numpy as np
 import torch
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_is_fitted
 from torch.utils.data import DataLoader
+
+logger = logging.getLogger(__name__)
 
 from mastnet._graph import NeighbourDataset, build_graph
 from mastnet._model import MaSTNeT
@@ -115,6 +119,10 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     block_size_deg : float, default=15.0
         Width/height of each spatial block in degrees.  Only used when
         ``val_method='block'``.
+    verbose : bool, default=True
+        Show progress bars and per-epoch log lines during training and
+        inference.  Set to ``False`` to silence all console output (e.g.
+        inside a grid search or cross-validation loop).
 
     Attributes
     ----------
@@ -141,7 +149,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     ...     rng.uniform(0, 5000, n),                   # depth (m)
     ...     rng.integers(1990, 2020, n).astype(float), # year
     ... ])
-    >>> imputer = MaSTNetImputer(max_epochs=50, n_neighbours_space=15, n_neighbours_time=15)
+    >>> imputer = MaSTNetImputer(max_epochs=50, n_neighbours_space=15, n_neighbours_time=15, verbose=False)
     >>> X_filled = imputer.fit_transform(X, coords)
     """
 
@@ -173,6 +181,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             n_inference: int = 50,
             val_method: str = "random",
             block_size_deg: float = 15.0,
+            verbose: bool = True,
     ):
         self.n_neighbours_space = n_neighbours_space
         self.n_neighbours_time = n_neighbours_time
@@ -200,6 +209,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.n_inference = n_inference
         self.val_method = val_method
         self.block_size_deg = block_size_deg
+        self.verbose = verbose
 
     def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return (train_idx, val_idx) according to ``val_method``."""
@@ -294,7 +304,13 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         # Build graph (validation feature values masked to prevent leakage)
         values_for_graph = values_full.clone()
         values_for_graph[val_idx] = float("nan")
+        logger.info(
+            "Building k-NN graph (n=%d, k_space=%d, k_time=%d)...",
+            len(coords_full), self.n_neighbours_space, self.n_neighbours_time,
+        )
+        t0 = time()
         graph = build_graph(coords_full, self.n_neighbours_space, self.n_neighbours_time)
+        logger.info("Graph built in %.1fs.", time() - t0)
         self.graph_ = graph
 
         # Loaders
@@ -328,6 +344,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             device=device, loss_name=self.loss_name,
             cylindrical_mask_size=self.cylindrical_mask_size,
             cylindrical_mask_prob=self.cylindrical_mask_prob,
+            verbose=self.verbose,
         )
 
         self.device_ = device
@@ -367,7 +384,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Predict and unscale
         preds_np = inverse_transform(
-            reconstruct(self.model_, loader, self.device_).numpy(),
+            reconstruct(self.model_, loader, self.device_, verbose=self.verbose).numpy(),
             self.scaler_dict_, self.feature_names_,
         )
 
@@ -396,7 +413,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Unscale predictions
         preds_np = inverse_transform(
-            reconstruct(self.model_, self.full_loader_, self.device_).numpy(),
+            reconstruct(self.model_, self.full_loader_, self.device_, verbose=self.verbose).numpy(),
             self.scaler_dict_, self.feature_names_,
         )
 
@@ -449,7 +466,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Predict mean, epistemic and aleatoric uncertainties
         mean_t, aleatoric_t, epistemic_t = reconstruct_with_uncertainty(
-            self.model_, loader, self.device_, n_inference=self.n_inference
+            self.model_, loader, self.device_, n_inference=self.n_inference, verbose=self.verbose
         )
 
         # Unscale predictions
