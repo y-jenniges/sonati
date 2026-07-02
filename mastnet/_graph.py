@@ -16,9 +16,9 @@ def _knn_indices(coords: np.ndarray, k: int) -> torch.Tensor:
 
 
 def build_graph(
-    coords_scaled: Tensor,
-    n_neighbours_space: int,
-    n_neighbours_time: int,
+        coords_scaled: Tensor,
+        n_neighbours_space: int,
+        n_neighbours_time: int,
 ) -> Dict[str, Tensor]:
     """
     Build separate spatial and temporal k-NN graphs.
@@ -42,8 +42,8 @@ def build_graph(
     dict with keys ``'space'`` and ``'time'``, each a LongTensor of shape (n, k).
     """
     c = coords_scaled.cpu().numpy()
-    space_idx = _knn_indices(c[:, :4], n_neighbours_space)   # x, y, z, depth
-    time_idx  = _knn_indices(c[:, 4:], n_neighbours_time)    # scaled time (1 or 2 cols)
+    space_idx = _knn_indices(c[:, :4], n_neighbours_space)  # x, y, z, depth
+    time_idx = _knn_indices(c[:, 4:], n_neighbours_time)  # scaled time (1 or 2 cols)
     return {"space": space_idx, "time": time_idx}
 
 
@@ -65,8 +65,8 @@ class NeighbourDataset(Dataset):
                  query_indices=None):
         self.coords = coords
         self.values = values
-        self.mask   = ~torch.isnan(values)
-        self.graph  = graph
+        self.mask = ~torch.isnan(values)
+        self.graph = graph
         self.query_indices = (
             torch.arange(len(values)) if query_indices is None
             else torch.as_tensor(query_indices, dtype=torch.long)
@@ -80,8 +80,8 @@ class NeighbourDataset(Dataset):
         q = self.query_indices[idx]
         out: Dict[str, Any] = {
             "query_features": self.values[q],
-            "query_mask":     self.mask[q],
-            "query_coords":   self.coords[q],
+            "query_mask": self.mask[q],
+            "query_coords": self.coords[q],
         }
 
         # Iterate over scopes
@@ -89,9 +89,9 @@ class NeighbourDataset(Dataset):
             # Define neighbour features/mask/coords/rel_positions
             nb = n_idx[q]
             out[scope] = {
-                "features":     self.values[nb],
-                "mask":         self.mask[nb],
-                "coords":       self.coords[nb],
+                "features": self.values[nb],
+                "mask": self.mask[nb],
+                "coords": self.coords[nb],
                 "rel_positions": self.coords[nb] - self.coords[q],
             }
 

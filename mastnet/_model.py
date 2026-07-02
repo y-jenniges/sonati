@@ -11,12 +11,12 @@ class _CrossAttentionBlock(nn.Module):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float):
         super().__init__()
         # Multi-head attention (only query attends to neighbours)
-        self.attn  = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, batch_first=True, dropout=dropout)
+        self.attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, batch_first=True, dropout=dropout)
 
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
 
-        self.mlp   = nn.Sequential(
+        self.mlp = nn.Sequential(
             nn.Linear(d_model, dim_feedforward),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -73,23 +73,23 @@ class MaSTNeT(nn.Module):
     """
 
     def __init__(
-        self,
-        n_features: int,
-        coord_dim: int = 5,
-        d_model: int = 64,
-        nhead: int = 4,
-        n_spatial_layers: int = 3,
-        n_temporal_layers: int = 3,
-        dim_feedforward: int = 128,
-        dropout: float = 0.1,
-        use_masks: bool = True,
-        fill_strategy: str = "zero",
-        global_means=None,
+            self,
+            n_features: int,
+            coord_dim: int = 5,
+            d_model: int = 64,
+            nhead: int = 4,
+            n_spatial_layers: int = 3,
+            n_temporal_layers: int = 3,
+            dim_feedforward: int = 128,
+            dropout: float = 0.1,
+            use_masks: bool = True,
+            fill_strategy: str = "zero",
+            global_means=None,
     ):
         super().__init__()
-        self.n_features    = n_features
-        self.coord_dim     = coord_dim
-        self.use_masks     = use_masks
+        self.n_features = n_features
+        self.coord_dim = coord_dim
+        self.use_masks = use_masks
         self.fill_strategy = fill_strategy
 
         if global_means is not None:
