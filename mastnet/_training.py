@@ -9,9 +9,15 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import logging
+import sys
 from time import strftime
 
 logger = logging.getLogger(__name__)
+
+
+def _tqdm_ok(verbose: bool) -> bool:
+    """True only when stderr is an interactive terminal."""
+    return verbose and sys.stderr.isatty()
 
 
 # ------------------------------------------------------------------
@@ -222,7 +228,7 @@ def _train_epoch(
     """Run one training epoch; return mean loss per observed value."""
     model.train()
     total, n = 0.0, 0
-    for batch in tqdm(loader, desc="  train", leave=False, disable=not verbose):
+    for batch in tqdm(loader, desc="  train", leave=False, disable=not _tqdm_ok(verbose)):
         batch = _to_device(batch, device)
         batch, loss_mask = _apply_random_mask(
             batch, mask_ratio, device,
@@ -253,7 +259,7 @@ def _eval_epoch(
     """Evaluate on ``loader`` without gradient updates; return mean loss."""
     model.eval()
     total, n = 0.0, 0
-    for batch in tqdm(loader, desc="    val", leave=False, disable=not verbose):
+    for batch in tqdm(loader, desc="    val", leave=False, disable=not _tqdm_ok(verbose)):
         batch = _to_device(batch, device)
         batch, loss_mask = _apply_random_mask(
             batch, mask_ratio, device,
@@ -290,7 +296,7 @@ def reconstruct(model, loader: DataLoader, device: torch.device, verbose: bool =
     """
     model.eval()
     preds = []
-    for batch in tqdm(loader, desc="Reconstructing", leave=False, disable=not verbose):
+    for batch in tqdm(loader, desc="Reconstructing", leave=False, disable=not _tqdm_ok(verbose)):
         batch = _to_device(batch, device)
         pred_mean, _ = model(batch)
         preds.append(pred_mean.cpu())
@@ -332,7 +338,7 @@ def reconstruct_with_uncertainty(
     all_logvars: list[Tensor] = []
 
     with torch.no_grad():
-        for _ in tqdm(range(n_inference), desc="MC inference", disable=not verbose):
+        for _ in tqdm(range(n_inference), desc="MC inference", disable=not _tqdm_ok(verbose)):
             batch_means: list[Tensor] = []
             batch_logvars: list[Tensor] = []
             for batch in loader:
@@ -403,7 +409,7 @@ def fit(
     stopper = EarlyStopping(patience=patience)
     best_state = deepcopy(model.state_dict())
 
-    for epoch in tqdm(range(max_epochs), desc="Training", unit="epoch", disable=not verbose):
+    for epoch in tqdm(range(max_epochs), desc="Training", unit="epoch", disable=not _tqdm_ok(verbose)):
         train_loss = _train_epoch(
             model, train_loader, optimizer, loss_fn, mask_ratio, device,
             cylindrical_mask_size=cylindrical_mask_size,
@@ -427,13 +433,13 @@ def fit(
             f" | patience {stopper.counter}/{stopper.patience}"
         )
         logger.info(msg)
-        if verbose:
+        if _tqdm_ok(verbose):
             tqdm.write(msg)
 
         if should_stop:
-            stop_msg = f"Early stopping at epoch {epoch} (best={stopper.best_epoch})"
+            stop_msg = f"[{strftime('%d-%m-%Y %H:%M:%S')}] Early stopping at epoch {epoch} (best={stopper.best_epoch})"
             logger.info(stop_msg)
-            if verbose:
+            if _tqdm_ok(verbose):
                 tqdm.write(stop_msg)
             break
 
