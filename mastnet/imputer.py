@@ -119,6 +119,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     block_size_deg : float, default=15.0
         Width/height of each spatial block in degrees. Only used when
         ``val_method='block'``.
+    val_indices : array-like of int or None, default=None
+        Explicit row indices to hold out as the internal validation set for
+        early stopping. Takes precedence over ``val_method`` and ``val_frac``
+        when provided. Useful to reproduce an external experiment's fixed
+        train/validation split exactly.
     verbose : bool, default=True
         Show progress bars and per-epoch log lines during training and
         inference. Set to ``False`` to silence all console output (e.g.
@@ -181,6 +186,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             n_inference: int = 50,
             val_method: str = "random",
             block_size_deg: float = 15.0,
+            val_indices=None,
             verbose: bool = True,
     ):
         self.n_neighbours_space = n_neighbours_space
@@ -209,11 +215,15 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.n_inference = n_inference
         self.val_method = val_method
         self.block_size_deg = block_size_deg
+        self.val_indices = val_indices
         self.verbose = verbose
 
     def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return (train_idx, val_idx) according to ``val_method``."""
+        """Return (train_idx, val_idx) from ``val_indices`` if given, else according to ``val_method``."""
         idx = np.arange(len(coords_raw))
+        if self.val_indices is not None:
+            val_idx = np.asarray(self.val_indices, dtype=int)
+            return np.setdiff1d(idx, val_idx), val_idx
         if self.val_method == "block":
             lat = coords_raw[:, 0]
             lon = coords_raw[:, 1]
