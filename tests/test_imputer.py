@@ -105,6 +105,21 @@ def test_val_method_block():
     assert not np.isnan(X_filled).any()
 
 
+def test_val_indices():
+    # Explicit validation indices take precedence over val_method
+    X, coords = _dummy_data()
+    val_idx = np.arange(0, len(X), 5)
+    imputer = MaSTNetImputer(**_FAST, val_indices=val_idx, val_method="block")
+
+    train_idx, split_val = imputer._make_train_val_split(coords)
+    assert np.array_equal(np.sort(split_val), np.sort(val_idx))
+    assert len(np.intersect1d(train_idx, split_val)) == 0
+    assert len(train_idx) + len(split_val) == len(X)
+
+    X_filled = imputer.fit_transform(X, coords)
+    assert not np.isnan(X_filled).any()
+
+
 def test_fill_strategy_mean():
     # Test mean filling
     X, coords = _dummy_data()
