@@ -32,14 +32,15 @@ Baselines
   KNN (feat) - sklearn KNNImputer(k=5) in feature space.
                Finds nearest neighbours by feature similarity only;
                ignores lat/lon/time entirely.
-  MaSTNet - spatiotemporal cross-attention (this package).
+  MaSTNet - spatio-temporal cross-attention (this package).
 
 Metrics
 -------
-  MAE - mean absolute error in original units.
-  NMAE - normalised MAE = MAE / mean(|true values|) x 100 %.
+  MAE  - mean absolute error in original units.
+  MSE  - mean squared error in original units squared.
+  NMAE - normalised MAE = MAE / mean(|true values|) * 100 %.
          Allows comparison across features with different scales
-         and with published benchmarks.
+         and with published benchmarks (equivalent to MRE in Cini et al. 2022).
 """
 
 from __future__ import annotations
@@ -49,7 +50,6 @@ import sys
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import requests
@@ -75,8 +75,9 @@ def _mask_fraction(X: np.ndarray, frac: float, seed: int = 0):
 def _compute_metrics(X_true: np.ndarray, X_pred: np.ndarray,
                      held_out: np.ndarray,
                      feature_names: list[str]) -> dict[str, dict[str, float]]:
-    """MAE and NMAE per feature and overall, evaluated on held-out positions."""
+    """MAE, MSE and NMAE per feature and overall, evaluated on held-out positions."""
     mae: dict[str, float] = {}
+    mse: dict[str, float] = {}
     nmae: dict[str, float] = {}
 
     # Iterate over features
@@ -86,20 +87,21 @@ def _compute_metrics(X_true: np.ndarray, X_pred: np.ndarray,
         true_vals = X_true[col_mask, i]
         pred_vals = X_pred[col_mask, i]
 
-        # Compute metrics
         mae[name] = float(np.abs(pred_vals - true_vals).mean())
+        mse[name] = float(((pred_vals - true_vals) ** 2).mean())
         nmae[name] = float(mae[name] / np.abs(true_vals).mean() * 100)
 
-    # Aggregate metrics
     mae["overall"] = float(np.abs(X_pred[held_out] - X_true[held_out]).mean())
+    mse["overall"] = float(((X_pred[held_out] - X_true[held_out]) ** 2).mean())
     nmae["overall"] = float(mae["overall"] / np.abs(X_true[held_out]).mean() * 100)
-    return {"mae": mae, "nmae": nmae}
+    return {"mae": mae, "mse": mse, "nmae": nmae}
 
 
 def _print_tables(results: dict[str, dict],
                   feature_names: list[str],
                   mae_label: str = "MAE  (lower is better)",
-                  nmae_label: str = "NMAE %  = MAE / mean(|true|) x 100  (lower is better)",
+                  mse_label: str = "MSE  (lower is better)",
+                  nmae_label: str = "NMAE %  = MAE / mean(|true|) * 100  (lower is better)",
                   ref_note: str = "") -> None:
     """Print results."""
     col_names = feature_names + ["overall"]
@@ -120,6 +122,8 @@ def _print_tables(results: dict[str, dict],
 
     print(f"\n  {mae_label}")
     _table("mae", ".3f")
+    print(f"\n  {mse_label}")
+    _table("mse", ".3f")
     print(f"\n  {nmae_label}")
     _table("nmae", ".1f", "%")
     if ref_note:
@@ -300,8 +304,12 @@ def run_traffic() -> None:
     _print_tables(
         results, TRAFFIC_VARS,
         ref_note=(
-            "Reference -- GRIN (Cini et al., 2022) on METR-LA, 25 % random missing:\n"
-            "  MAE ~1.40 mph  |  NMAE ~3.1 %\n"
+            "Reference -- GRIN (Cini et al., 2022) on METR-LA\n"
+            "25 % random missing:\n"
+            "  MAE ~1.91 mph  |  MSE ~10.41 mph²  |  NMAE ~3.3 %\n"
+            "  (larger model, full 4-month dataset, trained to convergence)\n"
+            "5 % random + block missing:\n"
+            "  MAE ~2.03 mph  |  MSE ~13.26 mph²  |  NMAE ~3.52 %\n"
             "  (larger model, full 4-month dataset, trained to convergence)"
         ),
     )
