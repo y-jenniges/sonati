@@ -90,6 +90,8 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 | `lr` | 1e-3 | Adam learning rate |
 | `batch_size` | 64 | Mini-batch size |
 | `mask_ratio` | 0.5 | Fraction of observed values hidden during training |
+| `val_method` | `'random'` | Internal validation split: `'random'` or `'block'` (geographic) |
+| `val_indices` | `None` | Explicit validation row indices; overrides `val_method`/`val_frac` |
 | `cylindrical_mask_size` | 0.1 | Radius of the cylindrical spatial block mask in Cartesian unit-sphere distance; calibrated for global-scale data |
 | `cylindrical_mask_prob` | 0.3 | Per-batch probability of applying the cylindrical block mask; set to `0` for datasets with a small geographic extent |
 | `patience` | 10 | Early-stopping patience (epochs) |
@@ -98,6 +100,13 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 | `device` | `'auto'` | `'cpu'`, `'cuda'`, or `'auto'` |
 | `seed` | 42 | Random seed |
 | `n_inference` | 50 | MC Dropout forward passes used by `predict_with_uncertainty()` |
+
+## Examples
+
+The `examples/` directory contains runnable end-to-end scripts:
+
+- `real_world_test.py` - air-quality (Open-Meteo API) and traffic (METR-LA) imputation with public data downloaded on run.
+- `jenniges_reproduction.py` - reproduces the sparse, time-resolved ocean imputation from the [companion research project](https://github.com/y-jenniges/time_imputation) on the preprocessed COMFORT dataset (dataset + train/test split hosted on Zenodo). This is a workflow, not a bit-exact, reproduction: an independently trained model agrees with the research pipeline only within predicted uncertainty, which the script quantifies via `agreement_within_uncertainty()`. Pass `--data-path` to run against a local CSV, `--split-path` to use the published split as the exact early-stopping monitor, and `--reference-path` to log agreement against a reference imputation.
 
 ## Running the tests
 
