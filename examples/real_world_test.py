@@ -305,12 +305,11 @@ def run_traffic() -> None:
         results, TRAFFIC_VARS,
         ref_note=(
             "Reference -- GRIN (Cini et al., 2022) on METR-LA\n"
-            "25 % random missing:\n"
-            "  MAE ~1.91 mph  |  MSE ~10.41 mph²  |  NMAE ~3.3 %\n"
             "  (larger model, full 4-month dataset, trained to convergence)\n"
-            "5 % random + block missing:\n"
-            "  MAE ~2.03 mph  |  MSE ~13.26 mph²  |  NMAE ~3.52 %\n"
-            "  (larger model, full 4-month dataset, trained to convergence)"
+            "    25 % random missing:\n"
+            "      MAE ~1.91 mph  |  MSE ~10.41 mph²  |  NMAE ~3.3 %\n"
+            "    5 % random + block missing:\n"
+            "      MAE ~2.03 mph  |  MSE ~13.26 mph²  |  NMAE ~3.52 %\n"
         ),
     )
 
