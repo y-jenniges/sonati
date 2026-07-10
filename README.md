@@ -73,33 +73,48 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 
 ## Key hyperparameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `n_neighbours_space` | 30 | Neighbours per query in the spatial graph |
-| `n_neighbours_time` | 30 | Neighbours per query in the temporal graph |
-| `d_model` | 64 | Transformer embedding dimension |
-| `nhead` | 4 | Attention heads (must divide `d_model`) |
-| `n_spatial_layers` | 3 | Cross-attention layers over spatial neighbourhood |
-| `n_temporal_layers` | 3 | Cross-attention layers over temporal neighbourhood |
-| `dim_feedforward` | 128 | Feedforward sublayer width |
-| `dropout` | 0.1 | Dropout rate (training only) |
-| `use_masks` | `True` | Append binary observation mask to each token |
-| `fill_strategy` | `'zero'` | Fill unobserved positions with `'zero'` or `'mean'` |
-| `loss_name` | `'hetero'` | `'hetero'` (Gaussian NLL + variance head) or `'mse'` |
-| `max_epochs` | 100 | Training epoch limit |
-| `lr` | 1e-3 | Adam learning rate |
-| `batch_size` | 64 | Mini-batch size |
-| `mask_ratio` | 0.5 | Fraction of observed values hidden during training |
-| `val_method` | `'random'` | Internal validation split: `'random'` or `'block'` (geographic) |
-| `val_indices` | `None` | Explicit validation row indices; overrides `val_method`/`val_frac` |
-| `cylindrical_mask_size` | 0.1 | Radius of the cylindrical spatial block mask in Cartesian unit-sphere distance; calibrated for global-scale data |
-| `cylindrical_mask_prob` | 0.3 | Per-batch probability of applying the cylindrical block mask; set to `0` for datasets with a small geographic extent |
-| `patience` | 10 | Early-stopping patience (epochs) |
-| `val_frac` | 0.2 | Internal validation fraction |
-| `cyclic_time` | `False` | Cyclic sine/cosine encoding for the time column |
-| `device` | `'auto'` | `'cpu'`, `'cuda'`, or `'auto'` |
-| `seed` | 42 | Random seed |
-| `n_inference` | 50 | MC Dropout forward passes used by `predict_with_uncertainty()` |
+| Parameter | Default | Description                                                                                                            |
+|-----------|---------|------------------------------------------------------------------------------------------------------------------------|
+| `n_neighbours_space` | 30 | Neighbours per query in the spatial graph                                                                              |
+| `n_neighbours_time` | 30 | Neighbours per query in the temporal graph                                                                             |
+| `d_model` | 64 | Transformer embedding dimension                                                                                        |
+| `nhead` | 4 | Attention heads (must divide `d_model`)                                                                                |
+| `n_spatial_layers` | 3 | Cross-attention layers over spatial neighbourhood                                                                      |
+| `n_temporal_layers` | 3 | Cross-attention layers over temporal neighbourhood                                                                     |
+| `dim_feedforward` | 128 | Feedforward sublayer width                                                                                             |
+| `dropout` | 0.1 | Dropout rate (training only)                                                                                           |
+| `use_masks` | `True` | Append binary observation mask to each token                                                                           |
+| `fill_strategy` | `'zero'` | Fill unobserved positions with `'zero'` or `'mean'`                                                                    |
+| `loss_name` | `'hetero'` | `'hetero'` (Gaussian NLL + variance head) or `'mse'`                                                                   |
+| `max_epochs` | 100 | Training epoch limit                                                                                                   |
+| `lr` | 1e-3 | Adam learning rate                                                                                                     |
+| `batch_size` | 64 | Mini-batch size                                                                                                        |
+| `mask_ratio` | 0.5 | Fraction of observed values hidden during training                                                                     |
+| `val_method` | `'random'` | Internal validation split: `'random'` or `'block'` (geographic)                                                        |
+| `val_indices` | `None` | Explicit validation row indices; overrides `val_method`/`val_frac`                                                     |
+| `cylindrical_mask_size` | 0.1 | Radius of the cylindrical spatial block mask in Cartesian unit-sphere distance; calibrated for global-scale data       |
+| `cylindrical_mask_prob` | 0.3 | Per-batch probability of applying the cylindrical block mask; set to `0` for datasets with a small geographic extent   |
+| `grad_clip_norm` | 1.0 | Maximum gradient norm (clipped before each optimiser step); stabilises heteroscedastic training, set to `0` to disable |
+| `patience` | 10 | Early-stopping patience (epochs)                                                                                       |
+| `val_frac` | 0.2 | Internal validation fraction                                                                                           |
+| `cyclic_time` | `False` | Cyclic sine/cosine encoding for the time column                                                                        |
+| `device` | `'auto'` | `'cpu'`, `'cuda'`, or `'auto'`                                                                                         |
+| `seed` | 42 | Random seed                                                                                                            |
+| `n_inference` | 50 | MC Dropout forward passes used by `predict_with_uncertainty()`                                                         |
+
+## Precomputed graphs for hyperparameter tuning
+
+The k-NN graph depends only on the coordinates and the neighbour counts - not on feature values or model hyperparameters. On large datasets the graph build can dominate a trial's runtime, so for tuning it can be built once with the largest `k` under consideration and reused; `fit()` slices the first `n_neighbours_space` / `n_neighbours_time` columns per trial:
+
+```python
+from mastnet import MaSTNetImputer, precompute_graph
+
+graph = precompute_graph(coords, n_neighbours_space=60, n_neighbours_time=60)
+
+for k in (15, 30, 45, 60):
+    imputer = MaSTNetImputer(n_neighbours_space=k, n_neighbours_time=k)
+    imputer.fit(X, coords, graph=graph)   # no k-NN build in the trial
+```
 
 ## Examples
 
