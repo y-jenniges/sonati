@@ -7,6 +7,8 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
+from mastnet._preprocessing import preprocess
+
 
 def _knn_indices(coords: np.ndarray, k: int) -> torch.Tensor:
     """Return (n, k) neighbour indices excluding self."""
@@ -45,6 +47,50 @@ def build_graph(
     space_idx = _knn_indices(c[:, :4], n_neighbours_space)  # x, y, z, depth
     time_idx = _knn_indices(c[:, 4:], n_neighbours_time)  # scaled time (1 or 2 cols)
     return {"space": space_idx, "time": time_idx}
+
+
+def precompute_graph(
+        coords,
+        n_neighbours_space: int,
+        n_neighbours_time: int,
+        cyclic_time: bool = False,
+) -> Dict[str, Tensor]:
+    """
+    Build a k-NN graph from raw coordinates, e.g. for reuse across tuning trials.
+
+    The graph depends only on the coordinates and the neighbour counts -> during
+    hyperparameter tuning it can be built once (with the largest ``k`` under
+    consideration) and passed to :meth:`mastnet.MaSTNetImputer.fit` via its
+    ``graph`` argument, which slices the first
+    ``n_neighbours_space`` / ``n_neighbours_time`` columns per trial.
+
+    Note: coordinate scalers are fitted on *all* rows here, whereas
+    :meth:`~mastnet.MaSTNetImputer.fit` fits them on the training rows only.
+    MinMax scaling is monotonic per dimension, so this can at most swap
+    marginal neighbours and is negligible in practice.
+
+    Parameters
+    ----------
+    coords : array-like of shape (n, 4)
+        Raw coordinates as ``[lat (°), lon (°), depth (m), time]``.
+    n_neighbours_space : int
+        Number of spatial neighbours to store per query (choose the maximum
+        ``n_neighbours_space`` you intend to tune over).
+    n_neighbours_time : int
+        Number of temporal neighbours to store per query.
+    cyclic_time : bool, default=False
+        Must match the ``cyclic_time`` setting of the imputer the graph is
+        used with.
+
+    Returns
+    -------
+    dict with keys ``'space'`` and ``'time'``, each a LongTensor of shape (n, k).
+    """
+    coords_t = torch.as_tensor(np.asarray(coords, dtype=float), dtype=torch.float32)
+    coords_scaled, _, _ = preprocess(
+        coords_t, torch.zeros((len(coords_t), 0)), [], cyclic_time,
+    )
+    return build_graph(coords_scaled, n_neighbours_space, n_neighbours_time)
 
 
 class NeighbourDataset(Dataset):
