@@ -223,11 +223,17 @@ def _train_epoch(
         mask_ratio: float, device: torch.device,
         cylindrical_mask_size: float = 0.0,
         cylindrical_mask_prob: float = 0.0,
+        grad_clip_norm: float = 1.0,
         verbose: bool = True,
 ) -> float:
-    """Run one training epoch; return mean loss per observed value."""
+    """ Run one training epoch; return mean loss per observed value.
+
+    Batches with a non-finite loss are skipped (no optimiser step) so a single
+    diverging batch cannot poison the model weights. Returns ``nan`` when every
+    batch was skipped, which aborts training in :func:`fit`.
+    """
     model.train()
-    total, n = 0.0, 0
+    total, n, n_skipped = 0.0, 0, 0
     for batch in tqdm(loader, desc="  train", leave=False, disable=not _tqdm_ok(verbose)):
         batch = _to_device(batch, device)
         batch, loss_mask = _apply_random_mask(
@@ -240,12 +246,19 @@ def _train_epoch(
         pred_mean, pred_logvar = model(batch)
         target = batch["query_features"]
         loss = loss_fn(pred_mean, pred_logvar, target, loss_mask)
+        if not torch.isfinite(loss):
+            n_skipped += 1
+            continue
         optimizer.zero_grad()
         loss.backward()
+        if grad_clip_norm and grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
         optimizer.step()
         total += loss.item() * loss_mask.sum().item()
         n += loss_mask.sum().item()
-    return total / max(n, 1)
+    if n_skipped:
+        logger.warning("Skipped %d batch(es) with non-finite loss this epoch.", n_skipped)
+    return total / n if n else float("nan")
 
 
 @torch.no_grad()
@@ -373,10 +386,14 @@ def fit(
         loss_name: str = "hetero",
         cylindrical_mask_size: float = 0.0,
         cylindrical_mask_prob: float = 0.0,
+        grad_clip_norm: float = 1.0,
         verbose: bool = True,
 ) -> None:
-    """
-    Train ``model`` in-place with early stopping; restores best weights.
+    """Train ``model`` in-place with early stopping; restores best weights.
+
+    Training aborts as soon as the train or validation loss becomes non-finite
+    (instead of burning the remaining patience on NaN epochs); the best weights
+    seen so far are restored either way.
 
     Parameters
     ----------
@@ -400,6 +417,9 @@ def fit(
     cylindrical_mask_prob : float, default=0.0
         Per-batch probability of applying the cylindrical block mask during
         training **and** validation. Set to ``0`` to disable.
+    grad_clip_norm : float, default=1.0
+        Maximum gradient norm for :func:`torch.nn.utils.clip_grad_norm_`
+        applied before each optimiser step. Set to ``0`` to disable.
     verbose : bool, default=True
         Show tqdm progress bars and per-epoch log lines. Set to ``False``
         to suppress all console output (useful inside grid searches).
@@ -408,12 +428,14 @@ def fit(
     loss_fn = _build_loss(loss_name)
     stopper = EarlyStopping(patience=patience)
     best_state = deepcopy(model.state_dict())
+    val_history: list[float] = []
 
     for epoch in tqdm(range(max_epochs), desc="Training", unit="epoch", disable=not _tqdm_ok(verbose)):
         train_loss = _train_epoch(
             model, train_loader, optimizer, loss_fn, mask_ratio, device,
             cylindrical_mask_size=cylindrical_mask_size,
             cylindrical_mask_prob=cylindrical_mask_prob,
+            grad_clip_norm=grad_clip_norm,
             verbose=verbose,
         )
         val_loss = _eval_epoch(
@@ -424,8 +446,23 @@ def fit(
         )
 
         if val_loss < stopper.best_loss:
+            # A new best that beats the previous one by far more than the
+            # typical epoch-to-epoch change is often a pre-divergence artifact
+            # rather than a genuinely better model (see TODO item on hetero
+            # instability); warn so such runs can be inspected.
+            improvement = stopper.best_loss - val_loss
+            if len(val_history) >= 5:
+                median_step = float(np.median(np.abs(np.diff(val_history))))
+                if median_step > 0 and improvement > 5 * median_step:
+                    logger.warning(
+                        "Val loss improved by %.4f at epoch %d, over 5x the median "
+                        "epoch-to-epoch change (%.4f). This new best may be an "
+                        "instability artifact rather than a better model.",
+                        improvement, epoch, median_step,
+                    )
             best_state = deepcopy(model.state_dict())
         should_stop = stopper(val_loss)
+        val_history.append(val_loss)
 
         msg = (
             f"[{strftime('%d-%m-%Y %H:%M:%S')}] Epoch {epoch:03d}/{max_epochs}"
@@ -435,6 +472,17 @@ def fit(
         logger.info(msg)
         if _tqdm_ok(verbose):
             tqdm.write(msg)
+
+        if not (np.isfinite(train_loss) and np.isfinite(val_loss)):
+            abort_msg = (
+                f"[{strftime('%d-%m-%Y %H:%M:%S')}] Non-finite loss at epoch {epoch} "
+                f"(train={train_loss}, val={val_loss}); aborting training and "
+                f"restoring best weights (epoch {stopper.best_epoch})."
+            )
+            logger.warning(abort_msg)
+            if _tqdm_ok(verbose):
+                tqdm.write(abort_msg)
+            break
 
         if should_stop:
             stop_msg = f"[{strftime('%d-%m-%Y %H:%M:%S')}] Early stopping at epoch {epoch} (best={stopper.best_epoch})"
