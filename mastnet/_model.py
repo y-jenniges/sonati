@@ -4,6 +4,11 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+# Predicted log-variance is clamped to this symmetric range. Without it the
+# heteroscedastic NLL can drive the logvar head to extreme values whose exp()
+# overflows and collapses training to NaN.
+LOGVAR_CLAMP = 10.0
+
 
 class _CrossAttentionBlock(nn.Module):
     """Single cross-attention layer: query attends to a neighbourhood."""
@@ -162,6 +167,8 @@ class MaSTNeT(nn.Module):
         -------
         pred_mean : Tensor (B, F)
         pred_logvar : Tensor (B, F)
+            Clamped to ``[-LOGVAR_CLAMP, LOGVAR_CLAMP]`` to keep the
+            heteroscedastic NLL numerically stable.
         """
         # Project query token
         q = self.input_proj(
@@ -181,4 +188,5 @@ class MaSTNeT(nn.Module):
 
         # Only return query token
         h = q[:, 0]  # (B, D)
-        return self.mean_head(h), self.logvar_head(h)
+        pred_logvar = self.logvar_head(h).clamp(min=-LOGVAR_CLAMP, max=LOGVAR_CLAMP)
+        return self.mean_head(h), pred_logvar
