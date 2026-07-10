@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
-from mastnet._graph import NeighbourDataset, build_graph
+from mastnet._graph import NeighbourDataset, build_graph, precompute_graph
 from mastnet._model import MaSTNeT
 from mastnet._preprocessing import inverse_transform, preprocess
 from mastnet._training import fit, reconstruct, reconstruct_with_uncertainty
@@ -88,6 +88,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         training. This forces the model to reconstruct entire spatial patches
         rather than individual points and is important for generalisation.
         Set to ``0`` to disable.
+    grad_clip_norm : float, default=1.0
+        Maximum gradient norm; gradients are clipped with
+        :func:`torch.nn.utils.clip_grad_norm_` before every optimiser step.
+        Stabilises heteroscedastic training, which can otherwise diverge to
+        NaN. Set to ``0`` to disable.
     patience : int, default=10
         Early-stopping patience (epochs without validation improvement).
     val_frac : float, default=0.2
@@ -177,6 +182,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             mask_ratio: float = 0.5,
             cylindrical_mask_size: float = 0.1,
             cylindrical_mask_prob: float = 0.3,
+            grad_clip_norm: float = 1.0,
             patience: int = 10,
             val_frac: float = 0.2,
             cyclic_time: bool = False,
@@ -206,6 +212,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.mask_ratio = mask_ratio
         self.cylindrical_mask_size = cylindrical_mask_size
         self.cylindrical_mask_prob = cylindrical_mask_prob
+        self.grad_clip_norm = grad_clip_norm
         self.patience = patience
         self.val_frac = val_frac
         self.cyclic_time = cyclic_time
@@ -252,6 +259,27 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             return list(self.feature_names)
         return [f"feature_{i}" for i in range(np.asarray(X).shape[1])]
 
+    def _slice_graph(self, graph: dict, n: int) -> dict:
+        """Validate a precomputed graph and slice it to the configured neighbour counts."""
+        sliced = {}
+        for scope, k in (("space", self.n_neighbours_space),
+                         ("time", self.n_neighbours_time)):
+            if scope not in graph:
+                raise ValueError(f"Precomputed graph is missing the '{scope}' key.")
+            idx = torch.as_tensor(graph[scope], dtype=torch.long)
+            if idx.ndim != 2 or idx.shape[0] != n:
+                raise ValueError(
+                    f"Precomputed '{scope}' graph has shape {tuple(idx.shape)}; "
+                    f"expected ({n}, >= {k}) for this dataset."
+                )
+            if idx.shape[1] < k:
+                raise ValueError(
+                    f"Precomputed '{scope}' graph provides {idx.shape[1]} neighbours "
+                    f"but n_neighbours_{scope}={k}. Rebuild it with a larger k."
+                )
+            sliced[scope] = idx[:, :k]
+        return sliced
+
     def _make_loader(self, coords, values, graph, indices=None, shuffle=False, generator=None):
         ds = NeighbourDataset(coords, values, graph, query_indices=indices)
         return DataLoader(ds, batch_size=self.batch_size, shuffle=shuffle,
@@ -261,7 +289,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     # Sklearn API
     # ------------------------------------------------------------------
 
-    def fit(self, X, coords, y=None):
+    def fit(self, X, coords, y=None, graph=None):
         """
         Fit MaSTNeT on spatio-temporal data.
 
@@ -272,6 +300,15 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         coords : array-like of shape (n_samples, 4)
             Spatio-temporal coordinates as ``[lat (°), lon (°), depth (m), time]``.
         y : ignored
+        graph : dict or None, default=None
+            Precomputed k-NN graph with keys ``'space'`` and ``'time'``, each an
+            integer array of shape ``(n_samples, k)`` as returned by
+            :func:`mastnet.precompute_graph`. Each scope may provide *more*
+            neighbours than configured; only the first ``n_neighbours_space`` /
+            ``n_neighbours_time`` columns are used. Because the graph depends
+            only on the coordinates and ``k``, building it once with the largest
+            ``k`` under consideration and passing it here avoids repeating the
+            (potentially long) k-NN build in every hyperparameter-tuning trial.
 
         Returns
         -------
@@ -314,13 +351,20 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         # Build graph (validation feature values masked to prevent leakage)
         values_for_graph = values_full.clone()
         values_for_graph[val_idx] = float("nan")
-        logger.info(
-            "Building k-NN graph (n=%d, k_space=%d, k_time=%d)...",
-            len(coords_full), self.n_neighbours_space, self.n_neighbours_time,
-        )
-        t0 = time()
-        graph = build_graph(coords_full, self.n_neighbours_space, self.n_neighbours_time)
-        logger.info("Graph built in %.1fs.", time() - t0)
+        if graph is not None:
+            graph = self._slice_graph(graph, len(coords_full))
+            logger.info(
+                "Using precomputed k-NN graph (n=%d, k_space=%d, k_time=%d).",
+                len(coords_full), self.n_neighbours_space, self.n_neighbours_time,
+            )
+        else:
+            logger.info(
+                "Building k-NN graph (n=%d, k_space=%d, k_time=%d)...",
+                len(coords_full), self.n_neighbours_space, self.n_neighbours_time,
+            )
+            t0 = time()
+            graph = build_graph(coords_full, self.n_neighbours_space, self.n_neighbours_time)
+            logger.info("Graph built in %.1fs.", time() - t0)
         self.graph_ = graph
 
         # Loaders
@@ -354,6 +398,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             device=device, loss_name=self.loss_name,
             cylindrical_mask_size=self.cylindrical_mask_size,
             cylindrical_mask_prob=self.cylindrical_mask_prob,
+            grad_clip_norm=self.grad_clip_norm,
             verbose=self.verbose,
         )
 
@@ -410,13 +455,15 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         ----------
         X : array-like of shape (n_samples, n_features)
         coords : array-like of shape (n_samples, 4)
+        **fit_params
+            Forwarded to :meth:`fit` (e.g. a precomputed ``graph``).
 
         Returns
         -------
         X_imputed : ndarray of shape (n_samples, n_features)
         """
         # Fit model
-        self.fit(X, coords)
+        self.fit(X, coords, **fit_params)
 
         # Convert predictions to float array
         X = np.asarray(X, dtype=float)
