@@ -7,7 +7,7 @@ from torch import Tensor
 # Predicted log-variance is clamped to this symmetric range. Without it the
 # heteroscedastic NLL can drive the logvar head to extreme values whose exp()
 # overflows and collapses training to NaN.
-LOGVAR_CLAMP = 10.0
+LOGVAR_CLAMP = 20.0
 
 
 class _CrossAttentionBlock(nn.Module):
