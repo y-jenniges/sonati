@@ -280,8 +280,33 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             sliced[scope] = idx[:, :k]
         return sliced
 
-    def _make_loader(self, coords, values, graph, indices=None, shuffle=False, generator=None):
-        ds = NeighbourDataset(coords, values, graph, query_indices=indices)
+    def _inference_graph(self, coords_scaled: torch.Tensor) -> dict:
+        """
+        Return the k-NN graph for inference coordinates.
+
+        Reuses the graph built during :meth:`fit` when ``coords_scaled`` is
+        identical to the training coordinates (the common transform-after-fit
+        case), skipping a rebuild that can take many minutes on large datasets.
+        """
+        # Skip graph building
+        if torch.equal(coords_scaled, self.coords_full_):
+            logger.info("Coordinates match the training data; reusing the k-NN graph from fit().")
+            return self.graph_
+        logger.info(
+            "Building k-NN graph (n=%d, k_space=%d, k_time=%d)...",
+            len(coords_scaled), self.n_neighbours_space, self.n_neighbours_time,
+        )
+
+        # Build graph
+        t0 = time()
+        graph = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
+        logger.info("Graph built in %.1fs.", time() - t0)
+        return graph
+
+    def _make_loader(self, coords, values, graph, indices=None, shuffle=False,
+                     generator=None, neighbour_values=None):
+        ds = NeighbourDataset(coords, values, graph, query_indices=indices,
+                              neighbour_values=neighbour_values)
         return DataLoader(ds, batch_size=self.batch_size, shuffle=shuffle,
                           generator=generator if shuffle else None)
 
@@ -348,9 +373,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         obs[~mask_full] = float("nan")
         global_means = torch.nan_to_num(torch.nanmean(obs, dim=0), nan=0.0).tolist()
 
-        # Build graph (validation feature values masked to prevent leakage)
-        values_for_graph = values_full.clone()
-        values_for_graph[val_idx] = float("nan")
+        # Validation rows are NaN-ed in the neighbour-feature tensor so their
+        # observed values stay hidden from every neighbourhood during training
+        neighbour_values = values_full.clone()
+        neighbour_values[val_idx] = float("nan")
+
         if graph is not None:
             graph = self._slice_graph(graph, len(coords_full))
             logger.info(
@@ -367,12 +394,14 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             logger.info("Graph built in %.1fs.", time() - t0)
         self.graph_ = graph
 
-        # Loaders
+        # Loaders (train/val hide validation values from neighbourhoods)
         train_loader = self._make_loader(coords_full, values_full, graph,
                                          indices=train_idx, shuffle=True,
-                                         generator=generator)
+                                         generator=generator,
+                                         neighbour_values=neighbour_values)
         val_loader = self._make_loader(coords_full, values_full, graph,
-                                       indices=val_idx)
+                                       indices=val_idx,
+                                       neighbour_values=neighbour_values)
         self.full_loader_ = self._make_loader(coords_full, values_full, graph)
 
         # Model
@@ -433,8 +462,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             scaler_dict=self.scaler_dict_,
         )
 
-        # Build neighbourhood graphs
-        graph = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
+        # Neighbourhood graphs (reused from fit() when coords are the training coords)
+        graph = self._inference_graph(coords_scaled)
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
         # Predict and unscale
@@ -517,8 +546,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             scaler_dict=self.scaler_dict_,
         )
 
-        # Build neighbourhood graphs
-        graph = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
+        # Neighbourhood graphs (reused from fit() when coords are the training coords)
+        graph = self._inference_graph(coords_scaled)
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
         # Predict mean, epistemic and aleatoric uncertainties
