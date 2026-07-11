@@ -50,6 +50,8 @@ imputer.fit(X_train, coords_train)
 X_test_filled = imputer.transform(X_test, coords_test)
 ```
 
+When `transform()` or `predict_with_uncertainty()` is called on the training data itself, the k-NN graph built during `fit()` is reused automatically instead of being rebuilt - worth on large datasets, where the graph build can take long.
+
 To obtain per-point uncertainty estimates alongside imputed values, use `predict_with_uncertainty()`. It runs `n_inference` forward passes with dropout active (MC Dropout) to decompose uncertainty into aleatoric (data noise, from the variance head) and epistemic (model uncertainty, from the spread across passes) components:
 
 ```python
