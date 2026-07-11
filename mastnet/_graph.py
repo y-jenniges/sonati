@@ -104,14 +104,22 @@ class NeighbourDataset(Dataset):
     graph  : dict {"space": (n, k), "time": (n, k)} - precomputed neighbour indices
     query_indices : array-like or None - subset of rows to use as queries;
                     None uses all rows
+    neighbour_values : Tensor (n, n_features) or None - values to expose as
+                    *neighbour* features (query features/targets always come
+                    from ``values``). Pass a copy with e.g. validation rows set
+                    to NaN so their observed values stay hidden from other
+                    queries' neighbourhoods; None exposes ``values``.
     """
 
     def __init__(self, coords: Tensor, values: Tensor,
                  graph: Dict[str, Tensor],
-                 query_indices=None):
+                 query_indices=None,
+                 neighbour_values: Tensor | None = None):
         self.coords = coords
         self.values = values
         self.mask = ~torch.isnan(values)
+        self.neighbour_values = values if neighbour_values is None else neighbour_values
+        self.neighbour_mask = ~torch.isnan(self.neighbour_values)
         self.graph = graph
         self.query_indices = (
             torch.arange(len(values)) if query_indices is None
@@ -135,8 +143,8 @@ class NeighbourDataset(Dataset):
             # Define neighbour features/mask/coords/rel_positions
             nb = n_idx[q]
             out[scope] = {
-                "features": self.values[nb],
-                "mask": self.mask[nb],
+                "features": self.neighbour_values[nb],
+                "mask": self.neighbour_mask[nb],
                 "coords": self.coords[nb],
                 "rel_positions": self.coords[nb] - self.coords[q],
             }
