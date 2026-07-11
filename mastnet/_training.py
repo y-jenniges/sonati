@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import logging
 import sys
-from time import strftime
+from time import strftime, time
 
 logger = logging.getLogger(__name__)
 
@@ -309,10 +309,13 @@ def reconstruct(model, loader: DataLoader, device: torch.device, verbose: bool =
     """
     model.eval()
     preds = []
+    logger.info("Reconstructing %d batches...", len(loader))
+    t0 = time()
     for batch in tqdm(loader, desc="Reconstructing", leave=False, disable=not _tqdm_ok(verbose)):
         batch = _to_device(batch, device)
         pred_mean, _ = model(batch)
         preds.append(pred_mean.cpu())
+    logger.info("Reconstruction finished in %.1fs.", time() - t0)
     return torch.cat(preds)
 
 
@@ -351,7 +354,8 @@ def reconstruct_with_uncertainty(
     all_logvars: list[Tensor] = []
 
     with torch.no_grad():
-        for _ in tqdm(range(n_inference), desc="MC inference", disable=not _tqdm_ok(verbose)):
+        for i in tqdm(range(n_inference), desc="MC inference", disable=not _tqdm_ok(verbose)):
+            t0 = time()
             batch_means: list[Tensor] = []
             batch_logvars: list[Tensor] = []
             for batch in loader:
@@ -361,6 +365,8 @@ def reconstruct_with_uncertainty(
                 batch_logvars.append(pred_logvar.cpu())
             all_means.append(torch.cat(batch_means))
             all_logvars.append(torch.cat(batch_logvars))
+            logger.info("MC inference pass %d/%d finished in %.1fs.",
+                        i + 1, n_inference, time() - t0)
 
     model.eval()
 
