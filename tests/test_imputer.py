@@ -215,6 +215,49 @@ def test_precomputed_graph():
     assert torch.equal(imputer.graph_["space"], graph["space"][:, :10])
 
 
+def test_neighbour_values_hidden():
+    # Values NaN-ed in neighbour_values must be invisible as neighbour features
+    # while the same rows remain fully usable as queries (targets/inputs)
+    from mastnet._graph import NeighbourDataset
+
+    coords = torch.rand(4, 5)
+    values = torch.arange(8, dtype=torch.float32).reshape(4, 2)
+    graph = {"space": torch.tensor([[1], [0], [1], [1]]),
+             "time": torch.tensor([[2], [2], [0], [0]])}
+
+    neighbour_values = values.clone()
+    neighbour_values[1] = float("nan")  # hide row 1 from neighbourhoods
+    ds = NeighbourDataset(coords, values, graph, neighbour_values=neighbour_values)
+
+    sample = ds[0]  # spatial neighbour of query 0 is the hidden row 1
+    assert torch.isnan(sample["space"]["features"]).all()
+    assert not sample["space"]["mask"].any()
+    # Row 1 as a *query* still exposes its own values
+    assert torch.equal(ds[1]["query_features"], values[1])
+    assert ds[1]["query_mask"].all()
+    # Unhidden neighbours are unaffected (temporal neighbour of query 0 is row 2)
+    assert torch.equal(sample["time"]["features"][0], values[2])
+
+
+def test_transform_reuses_training_graph(monkeypatch):
+    # transform on the training data must reuse self.graph_ instead of rebuilding
+    from mastnet import imputer as imputer_module
+
+    X, coords = _dummy_data()
+    imputer = MaSTNetImputer(**_FAST)
+    imputer.fit(X, coords)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("build_graph should not be called for training coords")
+
+    monkeypatch.setattr(imputer_module, "build_graph", _fail)
+    X_filled = imputer.transform(X, coords)  # same coords -> reuse, no rebuild
+    assert not np.isnan(X_filled).any()
+
+    with pytest.raises(AssertionError, match="should not be called"):
+        imputer.transform(X[:100], coords[:100])  # new coords -> rebuild attempted
+
+
 def test_precomputed_graph_validation():
     # Invalid precomputed graphs must raise informative errors
     X, coords = _dummy_data()
