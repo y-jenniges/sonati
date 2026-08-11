@@ -85,6 +85,28 @@ def test_predict_with_uncertainty():
     assert (epistemic_det == 0).all()
 
 
+def test_predict_with_uncertainty_realizations():
+    # return_realizations=True must expose the individual MC-dropout draws,
+    # in physical units, whose mean matches the aggregate X_filled prediction
+    X, coords = _dummy_data()
+    imputer = MaSTNetImputer(**_FAST)
+    imputer.fit(X, coords)
+    X_filled, aleatoric_std, epistemic_std, realizations = imputer.predict_with_uncertainty(
+        X, coords, return_realizations=True
+    )
+    assert realizations.shape == (imputer.n_inference, *X.shape)
+    assert not np.isnan(realizations).any()
+
+    missing = np.isnan(X)
+    np.testing.assert_allclose(
+        realizations.mean(0)[missing], X_filled[missing], rtol=1e-4, atol=1e-4
+    )
+
+    # Default call keeps the original 3-tuple return signature
+    result = imputer.predict_with_uncertainty(X, coords)
+    assert len(result) == 3
+
+
 def test_cyclic_time():
     # Random data with cyclic time
     rng = np.random.default_rng(1)

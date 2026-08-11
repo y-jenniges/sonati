@@ -321,8 +321,8 @@ def reconstruct(model, loader: DataLoader, device: torch.device, verbose: bool =
 
 def reconstruct_with_uncertainty(
         model, loader: DataLoader, device: torch.device, n_inference: int = 10,
-        verbose: bool = True,
-) -> tuple[Tensor, Tensor, Tensor]:
+        verbose: bool = True, return_realizations: bool = False,
+) -> tuple[Tensor, Tensor, Tensor] | tuple[Tensor, Tensor, Tensor, Tensor]:
     """
     MC Dropout inference to estimate both aleatoric and epistemic uncertainty.
 
@@ -339,6 +339,10 @@ def reconstruct_with_uncertainty(
         Number of stochastic forward passes.
     verbose : bool, default=True
         Show a progress bar over inference passes.
+    return_realizations : bool, default=False
+        If True, also return the individual per-pass mean predictions (before
+        aggregation), e.g. for downstream methods that need the distribution
+        across draws rather than its first two moments.
 
     Returns
     -------
@@ -348,6 +352,9 @@ def reconstruct_with_uncertainty(
         Per-point aleatoric (data) uncertainty: ``sqrt(mean(exp(logvar)))``.
     epistemic_std : Tensor of shape (n, n_features)
         Per-point epistemic (model) uncertainty: std of means across passes.
+    realizations : Tensor of shape (n_inference, n, n_features), optional
+        Only returned when ``return_realizations=True``: the individual
+        per-pass mean predictions.
     """
     model.train()  # activates dropout
     all_means: list[Tensor] = []
@@ -377,6 +384,8 @@ def reconstruct_with_uncertainty(
     epistemic_std = stacked_means.std(0, correction=0)
     aleatoric_std = (stacked_logvars.mean(0) * 0.5).exp()  # sqrt(exp(logvar))
 
+    if return_realizations:
+        return mean, aleatoric_std, epistemic_std, stacked_means
     return mean, aleatoric_std, epistemic_std
 
 
