@@ -266,7 +266,10 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
                          ("time", self.n_neighbours_time)):
             if scope not in graph:
                 raise ValueError(f"Precomputed graph is missing the '{scope}' key.")
-            idx = torch.as_tensor(graph[scope], dtype=torch.long)
+            # Preserve the incoming integer dtype (e.g. int32 from
+            # precompute_graph) rather than forcing int64, which would
+            # double memory back up for large precomputed graphs.
+            idx = torch.as_tensor(graph[scope])
             if idx.ndim != 2 or idx.shape[0] != n:
                 raise ValueError(
                     f"Precomputed '{scope}' graph has shape {tuple(idx.shape)}; "

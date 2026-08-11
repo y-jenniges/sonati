@@ -11,10 +11,13 @@ from mastnet._preprocessing import preprocess
 
 
 def _knn_indices(coords: np.ndarray, k: int) -> torch.Tensor:
-    """Return (n, k) neighbour indices excluding self."""
+    """Return (n, k) neighbour indices excluding self.
+
+    Stored as int32 rather than the default int64 to reduce memory.
+    """
     nbrs = NearestNeighbors(n_neighbors=k + 1, algorithm="auto").fit(coords)
     idx = nbrs.kneighbors(return_distance=False)
-    return torch.tensor(idx[:, 1:], dtype=torch.long)  # drop self
+    return torch.tensor(idx[:, 1:], dtype=torch.int32)  # drop self
 
 
 def build_graph(
@@ -141,7 +144,9 @@ class NeighbourDataset(Dataset):
         # Iterate over scopes
         for scope, n_idx in self.graph.items():
             # Define neighbour features/mask/coords/rel_positions
-            nb = n_idx[q]
+            # (.long(): advanced indexing requires int64; n_idx itself is
+            # stored as int32 to keep the full (n, k) graph small)
+            nb = n_idx[q].long()
             out[scope] = {
                 "features": self.neighbour_values[nb],
                 "mask": self.neighbour_mask[nb],
