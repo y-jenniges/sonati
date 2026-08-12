@@ -237,6 +237,24 @@ def test_precomputed_graph():
     assert torch.equal(imputer.graph_["space"], graph["space"][:, :10])
 
 
+def test_knn_indices_nearest_neighbour_in_column_zero():
+    # Column 0 of _knn_indices must be each point's true nearest neighbour,
+    # not its second-nearest (regression test for the off-by-one self-drop)
+    from mastnet._graph import _knn_indices
+
+    rng = np.random.default_rng(0)
+    coords = rng.uniform(-10, 10, size=(50, 3))
+    k = 5
+    idx = _knn_indices(coords, k).numpy()
+    assert idx.shape == (50, k)
+
+    for i in range(len(coords)):
+        dists = np.linalg.norm(coords - coords[i], axis=1)
+        dists[i] = np.inf  # exclude self
+        true_nearest = dists.argmin()
+        assert idx[i, 0] == true_nearest
+
+
 def test_neighbour_values_hidden():
     # Values NaN-ed in neighbour_values must be invisible as neighbour features
     # while the same rows remain fully usable as queries (targets/inputs)

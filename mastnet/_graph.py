@@ -15,9 +15,11 @@ def _knn_indices(coords: np.ndarray, k: int) -> torch.Tensor:
 
     Stored as int32 rather than the default int64 to reduce memory.
     """
-    nbrs = NearestNeighbors(n_neighbors=k + 1, algorithm="auto").fit(coords)
+    nbrs = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(coords)
+    # kneighbors() called without an X argument already excludes each point
+    # from its own neighbour list, so no self-column needs dropping here.
     idx = nbrs.kneighbors(return_distance=False)
-    return torch.tensor(idx[:, 1:], dtype=torch.int32)  # drop self
+    return torch.tensor(idx, dtype=torch.int32)
 
 
 def build_graph(
