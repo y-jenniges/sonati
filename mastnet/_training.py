@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from typing import Callable
+import math
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -12,7 +13,13 @@ import logging
 import sys
 from time import strftime, time
 
+from mastnet._model import LOGVAR_CLAMP
+
 logger = logging.getLogger(__name__)
+
+# Matches the model head's own clamp, so the variance floor never binds
+# tighter than pred_logvar's actual range.
+_VAR_FLOOR = math.exp(-LOGVAR_CLAMP)
 
 
 def _tqdm_ok(verbose: bool) -> bool:
@@ -32,7 +39,7 @@ def _masked_mse(pred: Tensor, target: Tensor, mask: Tensor) -> Tensor:
 def _heteroscedastic_nll(pred_mean: Tensor, pred_logvar: Tensor,
                          target: Tensor, mask: Tensor) -> Tensor:
     """Gaussian NLL with predicted log-variance (Kendall & Gal 2017)."""
-    var = pred_logvar[mask].exp().clamp(min=1e-6)
+    var = pred_logvar[mask].exp().clamp(min=_VAR_FLOOR)
     return (0.5 * (pred_logvar[mask] + (target[mask] - pred_mean[mask]) ** 2 / var)).mean()
 
 
@@ -382,7 +389,7 @@ def reconstruct_with_uncertainty(
 
     mean = stacked_means.mean(0)
     epistemic_std = stacked_means.std(0, correction=0)
-    aleatoric_std = (stacked_logvars.mean(0) * 0.5).exp()  # sqrt(exp(logvar))
+    aleatoric_std = stacked_logvars.exp().mean(0).sqrt()  # sqrt(mean(exp(logvar)))
 
     if return_realizations:
         return mean, aleatoric_std, epistemic_std, stacked_means
