@@ -11,14 +11,96 @@ from mastnet._preprocessing import preprocess
 
 
 def _knn_indices(coords: np.ndarray, k: int) -> torch.Tensor:
-    """Return (n, k) neighbour indices excluding self.
-
+    """
+    Return (n, k) neighbour indices excluding self.
     Stored as int32 rather than the default int64 to reduce memory.
     """
     nbrs = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(coords)
-    # kneighbors() called without an X argument already excludes each point
-    # from its own neighbour list, so no self-column needs dropping here.
     idx = nbrs.kneighbors(return_distance=False)
+    return torch.tensor(idx, dtype=torch.int32)
+
+
+def _sorted_knn_1d(values: np.ndarray, k: int, period: float | None = None,
+                    chunk_size: int = 500_000) -> np.ndarray:
+    """
+    k-NN indices along a single scalar axis, via sorting instead of a tree.
+
+    Parameters
+    ----------
+    values : (n,) array to compute neighbours on
+    k : neighbours per point, excluding self
+    period : if given, `values` is treated as circular with the given period
+        (e.g. 2*pi for an angle), so windows can cross the wrap point.
+        None for a plain linear axis.
+    chunk_size : rows processed per batch to bound peak memory.
+
+    Returns
+    -------
+    (n, k) int64 array of neighbour indices.
+    """
+    n = len(values)
+    if k >= n:
+        raise ValueError(f"n_neighbours ({k}) must be smaller than n_samples ({n})")
+
+    # Sort values
+    order = np.argsort(values, kind="stable")
+    sorted_vals = values[order]
+
+    # Check if cyclic time is used
+    if period is not None:
+        # Pad windows near both edges (so they see the other edge)
+        pad_vals = np.concatenate([sorted_vals[-k:] - period, sorted_vals, sorted_vals[:k] + period])
+        pad_order = np.concatenate([order[-k:], order, order[:k]])
+    else:
+        # Pad with +/-inf (to be usable with fixed-size sliding window)
+        pad_vals = np.concatenate([np.full(k, -np.inf), sorted_vals, np.full(k, np.inf)])
+        pad_order = np.concatenate([np.full(k, -1, dtype=order.dtype), order, np.full(k, -1, dtype=order.dtype)])
+
+    # Define sliding windows (centred around point k;
+    # potential neighbours can be left and/or right of the centre)
+    window_len = 2 * k + 1
+    val_windows = np.lib.stride_tricks.sliding_window_view(pad_vals, window_len)
+    idx_windows = np.lib.stride_tricks.sliding_window_view(pad_order, window_len)
+    center = k
+
+    # Iterate over chunks (for memory efficiency)
+    result = np.empty((n, k), dtype=np.int64)
+    for start in range(0, n, chunk_size):
+        # Get last data point for the chunk
+        stop = min(start + chunk_size, n)
+
+        # Define windows of potential nearest neighbours
+        vw = val_windows[start:stop]
+        iw = idx_windows[start:stop]
+
+        # Compute distances
+        dist = np.abs(vw - vw[:, center:center + 1])
+        dist[:, center] = np.inf  # exclude self
+
+        # Get nearest k neighbours
+        nearest = np.argpartition(dist, k, axis=1)[:, :k]  # idx of k nearest distances
+        nearest_dist = np.take_along_axis(dist, nearest, axis=1)  # actual distances
+        nearest = np.take_along_axis(nearest, np.argsort(nearest_dist, axis=1), axis=1)  # sort indexes according to distance
+
+        # Project window indexes to original dataset row indexes
+        neighbour_idx = np.take_along_axis(iw, nearest, axis=1)
+
+        # Add neighbours to results
+        result[order[start:stop]] = neighbour_idx
+
+    return result
+
+
+def _time_knn_indices(time_coords: np.ndarray, k: int) -> torch.Tensor:
+    """k-NN indices in the time subspace via :func:`_sorted_knn_1d`."""
+    if time_coords.shape[1] == 1:
+        # Linear time
+        idx = _sorted_knn_1d(time_coords[:, 0], k, period=None)
+    else:
+        # Cyclic time (compute angles for circular distance search)
+        cos_a, sin_a = 2 * time_coords[:, 0] - 1, 2 * time_coords[:, 1] - 1
+        angle = np.arctan2(sin_a, cos_a)
+        idx = _sorted_knn_1d(angle, k, period=2 * np.pi)
     return torch.tensor(idx, dtype=torch.int32)
 
 
@@ -50,7 +132,7 @@ def build_graph(
     """
     c = coords_scaled.cpu().numpy()
     space_idx = _knn_indices(c[:, :4], n_neighbours_space)  # x, y, z, depth
-    time_idx = _knn_indices(c[:, 4:], n_neighbours_time)  # scaled time (1 or 2 cols)
+    time_idx = _time_knn_indices(c[:, 4:], n_neighbours_time)  # scaled time (1 or 2 cols)
     return {"space": space_idx, "time": time_idx}
 
 
@@ -61,7 +143,7 @@ def precompute_graph(
         cyclic_time: bool = False,
 ) -> Dict[str, Tensor]:
     """
-    Build a k-NN graph from raw coordinates, e.g. for reuse across tuning trials.
+    Build a k-NN graph from raw coordinates, e.g. for re-use across tuning trials.
 
     The graph depends only on the coordinates and the neighbour counts -> during
     hyperparameter tuning it can be built once (with the largest ``k`` under
@@ -71,8 +153,6 @@ def precompute_graph(
 
     Note: coordinate scalers are fitted on *all* rows here, whereas
     :meth:`~mastnet.MaSTNetImputer.fit` fits them on the training rows only.
-    MinMax scaling is monotonic per dimension, so this can at most swap
-    marginal neighbours and is negligible in practice.
 
     Parameters
     ----------
@@ -100,7 +180,7 @@ def precompute_graph(
 
 class NeighbourDataset(Dataset):
     """
-    PyTorch Dataset returning a query point and its spatial / temporal neighbours.
+    PyTorch Dataset returning a query point and its spatial/temporal neighbours.
 
     Parameters
     ----------
