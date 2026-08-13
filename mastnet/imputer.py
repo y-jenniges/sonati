@@ -2,8 +2,10 @@
 
 import logging
 from time import time
+from typing import Dict
 import numpy as np
 import torch
+from torch import Tensor
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_is_fitted
@@ -26,6 +28,15 @@ def _set_seed(seed: int) -> torch.Generator:
     g = torch.Generator()
     g.manual_seed(seed)
     return g
+
+
+def _nan_aware_equal(a: Tensor, b: Tensor) -> bool:
+    """Tensor equality treating NaN == NaN (torch.equal doesn't)."""
+    return (
+        a.shape == b.shape and
+        torch.equal(a.isnan(), b.isnan()) and
+        torch.equal(torch.nan_to_num(a), torch.nan_to_num(b)
+    ))
 
 
 class MaSTNetImputer(BaseEstimator, TransformerMixin):
@@ -143,8 +154,10 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         ``0`` loads single-process (main bottleneck at large ``n``). Only
         applies inside :meth:`fit`, which warms these loaders up before
         moving the model to ``device`` to avoid forking after CUDA init.
-        :meth:`transform` / :meth:`predict_with_uncertainty` always load
-        single-process regardless of this setting.
+        :meth:`transform` / :meth:`predict_with_uncertainty` reuse that
+        warmed-up loader when called on the same data used to :meth:`fit`.
+        Otherwise, they load single-process, since the model is already on
+        ``device`` by then and forking would be unsafe.
     pin_memory : bool, default=False
         Passed to every internal ``DataLoader``. Speeds up host-to-device
         transfer on GPU. No effect on CPU.
@@ -337,6 +350,17 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
                           num_workers=num_workers, pin_memory=self.pin_memory,
                           persistent_workers=num_workers > 0)
 
+    def _inference_loader(self, coords_scaled: torch.Tensor, values_scaled: torch.Tensor,
+                          graph: Dict[str, Tensor]) -> DataLoader:
+        """Re-use full_loader_ (parallel, forked pre-CUDA) if coords and values match
+        the training data. Otherwise, use a fresh num_workers=0 loader (model is
+        already on device by now, so forking here would be unsafe)."""
+        if (torch.equal(coords_scaled, self.coords_full_)
+                and _nan_aware_equal(values_scaled, self.values_full_)):
+            logger.info("Coordinates and values match the training data; reusing the DataLoader from fit().")
+            return self.full_loader_
+        return self._make_loader(coords_scaled, values_scaled, graph)
+
     # ------------------------------------------------------------------
     # Sklearn API
     # ------------------------------------------------------------------
@@ -508,10 +532,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Neighbourhood graphs (reused from fit() when coords are the training coords)
         graph = self._inference_graph(coords_scaled)
-        # num_workers intentionally left at the _make_loader default (0): the model is
-        # already on `device` by this point, so forking workers here (self.num_workers)
-        # would fork after CUDA init (unsafe). See the num_workers docstring entry.
-        loader = self._make_loader(coords_scaled, values_scaled, graph)
+        loader = self._inference_loader(coords_scaled, values_scaled, graph)
 
         # Predict and unscale
         preds_np = inverse_transform(
@@ -603,10 +624,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Neighbourhood graphs (reused from fit() when coords are the training coords)
         graph = self._inference_graph(coords_scaled)
-        # num_workers intentionally left at the _make_loader default (0): the model is
-        # already on `device` by this point, so forking workers here (self.num_workers)
-        # would fork after CUDA init (unsafe). See the num_workers docstring entry.
-        loader = self._make_loader(coords_scaled, values_scaled, graph)
+        loader = self._inference_loader(coords_scaled, values_scaled, graph)
 
         # Predict mean, epistemic and aleatoric uncertainties
         result = reconstruct_with_uncertainty(
