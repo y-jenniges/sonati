@@ -313,3 +313,108 @@ def test_precomputed_graph_validation():
     wrong_n = precompute_graph(coords[:100], n_neighbours_space=15, n_neighbours_time=15)
     with pytest.raises(ValueError, match="expected"):
         imputer.fit(X, coords, graph=wrong_n)
+
+
+def _brute_force_1d(values: np.ndarray, k: int, period: float | None = None) -> np.ndarray:
+    # Computes distances brute force
+    n = len(values)
+    idx = np.empty((n, k), dtype=np.int64)
+
+    # Iterate over data points
+    for i in range(n):
+        diff = np.abs(values - values[i])  # Compute distance
+        if period is not None:
+            # Edge cases for cyclic time
+            diff = np.minimum(diff, period - diff)
+        diff[i] = np.inf  # exclude self
+        idx[i] = np.argsort(diff, kind="stable")[:k]
+    return idx
+
+
+def test_sorted_knn_1d_matches_brute_force_linear():
+    # Tests if 1d nearest neighbours matches brute force computations
+    from mastnet._graph import _sorted_knn_1d
+
+    # Generate some data
+    rng = np.random.default_rng(0)
+    values = rng.uniform(-5, 5, size=200)
+
+    # Compute nearest neighbours with both methods
+    k = 7
+    idx = _sorted_knn_1d(values, k)
+    expected = _brute_force_1d(values, k)
+
+    # Distances (not raw indices) must match - ties can pick either
+    # equidistant neighbour
+    for i in range(len(values)):
+        got_dists = np.sort(np.abs(values[idx[i]] - values[i]))
+        exp_dists = np.sort(np.abs(values[expected[i]] - values[i]))
+        assert np.allclose(got_dists, exp_dists)
+
+
+def test_sorted_knn_1d_matches_brute_force_with_heavy_duplicates():
+    # Tests if 1d nearest neighbours matches brute force computations
+    # when many duplicates are present
+    from mastnet._graph import _sorted_knn_1d
+
+    # Set up data
+    rng = np.random.default_rng(1)
+    values = rng.integers(2000, 2020, size=500).astype(float)  # 20 distinct years
+
+    # Compute nearest neighbours with both methods
+    k = 10
+    idx = _sorted_knn_1d(values, k)
+    expected = _brute_force_1d(values, k)
+
+    # Check if distances match
+    for i in range(len(values)):
+        got_dists = np.sort(np.abs(values[idx[i]] - values[i]))
+        exp_dists = np.sort(np.abs(values[expected[i]] - values[i]))
+        assert np.allclose(got_dists, exp_dists)
+
+
+def test_sorted_knn_1d_wraps_around_period():
+    # Test circular time (does wrap edge cases around work?)
+    from mastnet._graph import _sorted_knn_1d
+
+    # Set up data
+    period = 2 * np.pi
+    values = np.linspace(0, period, 100, endpoint=False)
+
+    # Compute nearest neighbours with both methods
+    k = 5
+    idx = _sorted_knn_1d(values, k, period=period)
+    expected = _brute_force_1d(values, k, period=period)
+
+    # Check if distances match
+    for i in range(len(values)):
+        got_dists = np.sort(np.minimum(np.abs(values[idx[i]] - values[i]),
+                                       period - np.abs(values[idx[i]] - values[i])))
+        exp_dists = np.sort(np.minimum(np.abs(values[expected[i]] - values[i]),
+                                       period - np.abs(values[expected[i]] - values[i])))
+        assert np.allclose(got_dists, exp_dists)
+
+    # Point 0 (angle 0) must see the points just below the wrap (angle ~2*pi)
+    assert (len(values) - 1) in idx[0]
+
+
+def test_time_knn_indices_cyclic_matches_linear_recovery():
+    # Test circular time (is angle decoding working correctly?)
+    from mastnet._graph import _time_knn_indices, _sorted_knn_1d
+
+    # Set up data
+    rng = np.random.default_rng(2)
+    months = rng.integers(1, 13, size=300).astype(float)
+    angle = 2 * np.pi * months / 12
+    time_coords = np.column_stack([(np.cos(angle) + 1) / 2, (np.sin(angle) + 1) / 2])
+
+    # Compute nearest neighbours with both methods
+    k = 6
+    idx = _time_knn_indices(time_coords, k).numpy()
+    expected = _sorted_knn_1d(angle, k, period=2 * np.pi)
+
+    # Check if distances match
+    for i in range(len(months)):
+        got_dists = np.sort(np.abs(angle[idx[i]] - angle[i]) % (2 * np.pi))
+        exp_dists = np.sort(np.abs(angle[expected[i]] - angle[i]) % (2 * np.pi))
+        assert np.allclose(got_dists, exp_dists, atol=1e-5)
