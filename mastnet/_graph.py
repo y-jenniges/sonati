@@ -10,10 +10,12 @@ from torch.utils.data import Dataset
 from mastnet._preprocessing import preprocess
 
 
-def _knn_indices(coords: np.ndarray, k: int, n_jobs: int | None = None) -> torch.Tensor:
+def _knn_indices(coords: np.ndarray, k: int, n_jobs: int | None = None,
+                  query_chunk_size: int = 5_000_000) -> torch.Tensor:
     """
     Return (n, k) neighbour indices excluding self.
-    Stored as int32 rather than the default int64 to reduce memory.
+    Stored as int32 rather than the default int64 and queried in chunks
+    to reduce memory.
 
     Parameters
     ----------
@@ -22,10 +24,23 @@ def _knn_indices(coords: np.ndarray, k: int, n_jobs: int | None = None) -> torch
     n_jobs : number of parallel jobs for the tree-based spatial search (sklearn
         convention: None means 1, -1 means all available cores). The temporal search
         (:func:`_time_knn_indices`) is sort-based and single-threaded.
+    query_chunk_size : rows queried per batch (to reduce peak memory for large datasets).
     """
+    # Fit nearest neighbours
+    n = len(coords)
     nbrs = NearestNeighbors(n_neighbors=k, algorithm="auto", n_jobs=n_jobs).fit(coords)
-    idx = nbrs.kneighbors(return_distance=False)
-    return torch.tensor(idx, dtype=torch.int32)
+
+    # Pre-allocate results array
+    result = np.empty((n, k), dtype=np.int32)
+
+    # Iterate over chunks
+    for start in range(0, n, query_chunk_size):
+        stop = min(start + query_chunk_size, n)
+        # Query neighbours
+        chunk_idx = nbrs.kneighbors(coords[start:stop], n_neighbors=k + 1, return_distance=False)
+        # Fill results array
+        result[start:stop] = chunk_idx[:, 1:]
+    return torch.from_numpy(result)
 
 
 def _sorted_knn_1d(values: np.ndarray, k: int, period: float | None = None,
@@ -44,7 +59,7 @@ def _sorted_knn_1d(values: np.ndarray, k: int, period: float | None = None,
 
     Returns
     -------
-    (n, k) int64 array of neighbour indices.
+    (n, k) int32 array of neighbour indices
     """
     n = len(values)
     if k >= n:
@@ -72,7 +87,7 @@ def _sorted_knn_1d(values: np.ndarray, k: int, period: float | None = None,
     center = k
 
     # Iterate over chunks (for memory efficiency)
-    result = np.empty((n, k), dtype=np.int64)
+    result = np.empty((n, k), dtype=np.int32)
     for start in range(0, n, chunk_size):
         # Get last data point for the chunk
         stop = min(start + chunk_size, n)
@@ -109,7 +124,7 @@ def _time_knn_indices(time_coords: np.ndarray, k: int) -> torch.Tensor:
         cos_a, sin_a = 2 * time_coords[:, 0] - 1, 2 * time_coords[:, 1] - 1
         angle = np.arctan2(sin_a, cos_a)
         idx = _sorted_knn_1d(angle, k, period=2 * np.pi)
-    return torch.tensor(idx, dtype=torch.int32)
+    return torch.from_numpy(idx)
 
 
 def build_graph(
@@ -142,7 +157,7 @@ def build_graph(
 
     Returns
     -------
-    dict with keys ``'space'`` and ``'time'``, each a LongTensor of shape (n, k).
+    dict with keys ``'space'`` and ``'time'``, each a LongTensor of shape (n, k)
     """
     c = coords_scaled.cpu().numpy()
     space_idx = _knn_indices(c[:, :4], n_neighbours_space, n_jobs=n_jobs)  # x, y, z, depth
@@ -186,7 +201,7 @@ def precompute_graph(
 
     Returns
     -------
-    dict with keys ``'space'`` and ``'time'``, each a LongTensor of shape (n, k).
+    dict with keys ``'space'`` and ``'time'``, each a LongTensor of shape (n, k)
     """
     coords_t = torch.as_tensor(np.asarray(coords, dtype=float), dtype=torch.float32)
     coords_scaled, _, _ = preprocess(
