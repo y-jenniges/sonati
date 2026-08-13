@@ -97,6 +97,7 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 | `cylindrical_mask_size` | 0.1 | Radius of the cylindrical spatial block mask in Cartesian unit-sphere distance; calibrated for global-scale data       |
 | `cylindrical_mask_prob` | 0.3 | Per-batch probability of applying the cylindrical block mask; set to `0` for datasets with a small geographic extent   |
 | `grad_clip_norm` | 1.0 | Maximum gradient norm (clipped before each optimiser step); stabilises heteroscedastic training, set to `0` to disable |
+| `n_jobs` | `None` | Parallel jobs for the spatial k-NN graph build (sklearn convention: `None`=1, `-1`=all cores)                          |
 | `patience` | 10 | Early-stopping patience (epochs)                                                                                       |
 | `val_frac` | 0.2 | Internal validation fraction                                                                                           |
 | `cyclic_time` | `False` | Cyclic sine/cosine encoding for the time column                                                                        |

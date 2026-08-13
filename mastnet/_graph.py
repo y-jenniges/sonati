@@ -10,12 +10,20 @@ from torch.utils.data import Dataset
 from mastnet._preprocessing import preprocess
 
 
-def _knn_indices(coords: np.ndarray, k: int) -> torch.Tensor:
+def _knn_indices(coords: np.ndarray, k: int, n_jobs: int | None = None) -> torch.Tensor:
     """
     Return (n, k) neighbour indices excluding self.
     Stored as int32 rather than the default int64 to reduce memory.
+
+    Parameters
+    ----------
+    coords : coordinates of the data points
+    k : number of neighbours per point, excluding self
+    n_jobs : number of parallel jobs for the tree-based spatial search (sklearn
+        convention: None means 1, -1 means all available cores). The temporal search
+        (:func:`_time_knn_indices`) is sort-based and single-threaded.
     """
-    nbrs = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(coords)
+    nbrs = NearestNeighbors(n_neighbors=k, algorithm="auto", n_jobs=n_jobs).fit(coords)
     idx = nbrs.kneighbors(return_distance=False)
     return torch.tensor(idx, dtype=torch.int32)
 
@@ -108,6 +116,7 @@ def build_graph(
         coords_scaled: Tensor,
         n_neighbours_space: int,
         n_neighbours_time: int,
+        n_jobs: int | None = None,
 ) -> Dict[str, Tensor]:
     """
     Build separate spatial and temporal k-NN graphs.
@@ -125,13 +134,18 @@ def build_graph(
         Number of nearest neighbours per query in the spatial graph.
     n_neighbours_time : int
         Number of nearest neighbours per query in the temporal graph.
+    n_jobs : int or None, default=None
+        Parallel jobs for the spatial (tree-based) k-NN search, forwarded to
+        :class:`sklearn.neighbors.NearestNeighbors` (``None`` means 1, ``-1``
+        means all available cores). The temporal search is sort-based and
+        single-threaded, so this has no effect on it.
 
     Returns
     -------
     dict with keys ``'space'`` and ``'time'``, each a LongTensor of shape (n, k).
     """
     c = coords_scaled.cpu().numpy()
-    space_idx = _knn_indices(c[:, :4], n_neighbours_space)  # x, y, z, depth
+    space_idx = _knn_indices(c[:, :4], n_neighbours_space, n_jobs=n_jobs)  # x, y, z, depth
     time_idx = _time_knn_indices(c[:, 4:], n_neighbours_time)  # scaled time (1 or 2 cols)
     return {"space": space_idx, "time": time_idx}
 
@@ -141,6 +155,7 @@ def precompute_graph(
         n_neighbours_space: int,
         n_neighbours_time: int,
         cyclic_time: bool = False,
+        n_jobs: int | None = None,
 ) -> Dict[str, Tensor]:
     """
     Build a k-NN graph from raw coordinates, e.g. for re-use across tuning trials.
@@ -166,6 +181,8 @@ def precompute_graph(
     cyclic_time : bool, default=False
         Must match the ``cyclic_time`` setting of the imputer the graph is
         used with.
+    n_jobs : int or None, default=None
+        Parallel jobs for the spatial k-NN search; see :func:`build_graph`.
 
     Returns
     -------
@@ -175,7 +192,7 @@ def precompute_graph(
     coords_scaled, _, _ = preprocess(
         coords_t, torch.zeros((len(coords_t), 0)), [], cyclic_time,
     )
-    return build_graph(coords_scaled, n_neighbours_space, n_neighbours_time)
+    return build_graph(coords_scaled, n_neighbours_space, n_neighbours_time, n_jobs=n_jobs)
 
 
 class NeighbourDataset(Dataset):

@@ -133,6 +133,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         Show progress bars and per-epoch log lines during training and
         inference. Set to ``False`` to silence all console output (e.g.
         inside a grid search or cross-validation loop).
+    n_jobs : int or None, default=None
+        Parallel jobs for the spatial k-NN graph build (sklearn convention:
+        ``None`` means 1, ``-1`` means all cores). No effect on a
+        precomputed graph passed via ``fit(..., graph=...)``, nor on the
+        single-threaded temporal k-NN search.
 
     Attributes
     ----------
@@ -194,6 +199,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             block_size_deg: float = 15.0,
             val_indices=None,
             verbose: bool = True,
+            n_jobs: int | None = None,
     ):
         self.n_neighbours_space = n_neighbours_space
         self.n_neighbours_time = n_neighbours_time
@@ -224,6 +230,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.block_size_deg = block_size_deg
         self.val_indices = val_indices
         self.verbose = verbose
+        self.n_jobs = n_jobs
 
     def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return (train_idx, val_idx) from ``val_indices`` if given, else according to ``val_method``."""
@@ -302,7 +309,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Build graph
         t0 = time()
-        graph = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time)
+        graph = build_graph(coords_scaled, self.n_neighbours_space, self.n_neighbours_time,
+                           n_jobs=self.n_jobs)
         logger.info("Graph built in %.1fs.", time() - t0)
         return graph
 
@@ -393,7 +401,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
                 len(coords_full), self.n_neighbours_space, self.n_neighbours_time,
             )
             t0 = time()
-            graph = build_graph(coords_full, self.n_neighbours_space, self.n_neighbours_time)
+            graph = build_graph(coords_full, self.n_neighbours_space, self.n_neighbours_time,
+                               n_jobs=self.n_jobs)
             logger.info("Graph built in %.1fs.", time() - t0)
         self.graph_ = graph
 
