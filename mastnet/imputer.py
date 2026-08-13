@@ -510,7 +510,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X_out[np.isnan(X_out)] = preds_np[np.isnan(X_out)]
         return X_out
 
-    def predict_with_uncertainty(self, X, coords, return_realizations: bool = False):
+    def predict_with_uncertainty(self, X, coords, return_realisations: bool = False):
         """
         Impute missing values and return per-point uncertainty estimates.
 
@@ -526,7 +526,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         ----------
         X : array-like of shape (n_samples, n_features)
         coords : array-like of shape (n_samples, 4)
-        return_realizations : bool, default=False
+        return_realisations : bool, default=False
             If True, also return the individual MC-dropout draws (physical
             units) instead of only their aggregate mean/std, e.g. for
             downstream methods that need the distribution across draws rather
@@ -540,8 +540,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             Per-point aleatoric (data) uncertainty: ``sqrt(mean(exp(logvar)))``.
         epistemic_std : ndarray of shape (n_samples, n_features)
             Per-point epistemic (model) uncertainty: std of means across MC passes.
-        realizations : ndarray of shape (n_inference, n_samples, n_features), optional
-            Only returned when ``return_realizations=True``: the individual
+        realisations : ndarray of shape (n_inference, n_samples, n_features), optional
+            Only returned when ``return_realisations=True``: the individual
             per-pass mean predictions, inverse-transformed to physical units.
         """
         check_is_fitted(self, ["model_", "scaler_dict_"])
@@ -564,10 +564,10 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         # Predict mean, epistemic and aleatoric uncertainties
         result = reconstruct_with_uncertainty(
             self.model_, loader, self.device_, n_inference=self.n_inference,
-            verbose=self.verbose, return_realizations=return_realizations,
+            verbose=self.verbose, return_realisations=return_realisations,
         )
-        if return_realizations:
-            mean_t, aleatoric_t, epistemic_t, realizations_t = result
+        if return_realisations:
+            mean_t, aleatoric_t, epistemic_t, realisations_t = result
         else:
             mean_t, aleatoric_t, epistemic_t = result
 
@@ -581,11 +581,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X_out = X.copy()
         X_out[np.isnan(X_out)] = mean_np[np.isnan(X_out)]
 
-        if return_realizations:
-            n_inference, n_samples, n_features = realizations_t.shape
-            realizations_np = inverse_transform(
-                realizations_t.reshape(-1, n_features).numpy(),
+        if return_realisations:
+            n_inference, n_samples, n_features = realisations_t.shape
+            realisations_np = inverse_transform(
+                realisations_t.reshape(-1, n_features).numpy(),
                 self.scaler_dict_, self.feature_names_,
             ).reshape(n_inference, n_samples, n_features)
-            return X_out, aleatoric_np, epistemic_np, realizations_np
+            return X_out, aleatoric_np, epistemic_np, realisations_np
         return X_out, aleatoric_np, epistemic_np
