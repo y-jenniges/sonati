@@ -138,6 +138,16 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         ``None`` means 1, ``-1`` means all cores). No effect on a
         precomputed graph passed via ``fit(..., graph=...)``, nor on the
         single-threaded temporal k-NN search.
+    num_workers : int, default=0
+        Worker processes for the ``fit()`` train/val/full DataLoaders.
+        ``0`` loads single-process (main bottleneck at large ``n``). Only
+        applies inside :meth:`fit`, which warms these loaders up before
+        moving the model to ``device`` to avoid forking after CUDA init.
+        :meth:`transform` / :meth:`predict_with_uncertainty` always load
+        single-process regardless of this setting.
+    pin_memory : bool, default=False
+        Passed to every internal ``DataLoader``. Speeds up host-to-device
+        transfer on GPU. No effect on CPU.
 
     Attributes
     ----------
@@ -200,6 +210,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             val_indices=None,
             verbose: bool = True,
             n_jobs: int | None = None,
+            num_workers: int = 0,
+            pin_memory: bool = False,
     ):
         self.n_neighbours_space = n_neighbours_space
         self.n_neighbours_time = n_neighbours_time
@@ -231,6 +243,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.val_indices = val_indices
         self.verbose = verbose
         self.n_jobs = n_jobs
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
 
     def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return (train_idx, val_idx) from ``val_indices`` if given, else according to ``val_method``."""
@@ -315,11 +329,13 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         return graph
 
     def _make_loader(self, coords, values, graph, indices=None, shuffle=False,
-                     generator=None, neighbour_values=None):
+                     generator=None, neighbour_values=None, num_workers=0):
         ds = NeighbourDataset(coords, values, graph, query_indices=indices,
                               neighbour_values=neighbour_values)
         return DataLoader(ds, batch_size=self.batch_size, shuffle=shuffle,
-                          generator=generator if shuffle else None)
+                          generator=generator if shuffle else None,
+                          num_workers=num_workers, pin_memory=self.pin_memory,
+                          persistent_workers=num_workers > 0)
 
     # ------------------------------------------------------------------
     # Sklearn API
@@ -410,11 +426,27 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         train_loader = self._make_loader(coords_full, values_full, graph,
                                          indices=train_idx, shuffle=True,
                                          generator=generator,
-                                         neighbour_values=neighbour_values)
+                                         neighbour_values=neighbour_values,
+                                         num_workers=self.num_workers)
         val_loader = self._make_loader(coords_full, values_full, graph,
                                        indices=val_idx,
-                                       neighbour_values=neighbour_values)
-        self.full_loader_ = self._make_loader(coords_full, values_full, graph)
+                                       neighbour_values=neighbour_values,
+                                       num_workers=self.num_workers)
+        self.full_loader_ = self._make_loader(coords_full, values_full, graph,
+                                              num_workers=self.num_workers)
+
+        if self.num_workers > 0:
+            # Force the loaders' worker processes to fork now, while the
+            # process is still CUDA-free. Forking after model.to(device)
+            # below would fork with an already-initialised CUDA context,
+            # which is unsafe. persistent_workers=True (set in
+            # _make_loader) keeps this same worker pool alive for every
+            # later epoch, so this is the only fork each loader ever does.
+            logger.info("Starting %d DataLoader worker(s) before moving the model to %s...",
+                       self.num_workers, device)
+            next(iter(train_loader))
+            next(iter(val_loader))
+            next(iter(self.full_loader_))
 
         # Model
         coord_dim = coords_full.shape[1]
@@ -476,6 +508,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Neighbourhood graphs (reused from fit() when coords are the training coords)
         graph = self._inference_graph(coords_scaled)
+        # num_workers intentionally left at the _make_loader default (0): the model is
+        # already on `device` by this point, so forking workers here (self.num_workers)
+        # would fork after CUDA init (unsafe). See the num_workers docstring entry.
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
         # Predict and unscale
@@ -568,6 +603,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Neighbourhood graphs (reused from fit() when coords are the training coords)
         graph = self._inference_graph(coords_scaled)
+        # num_workers intentionally left at the _make_loader default (0): the model is
+        # already on `device` by this point, so forking workers here (self.num_workers)
+        # would fork after CUDA init (unsafe). See the num_workers docstring entry.
         loader = self._make_loader(coords_scaled, values_scaled, graph)
 
         # Predict mean, epistemic and aleatoric uncertainties
