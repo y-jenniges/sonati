@@ -518,6 +518,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             cylindrical_mask_prob=self.cylindrical_mask_prob,
             grad_clip_norm=self.grad_clip_norm,
             verbose=self.verbose,
+            seed=self.seed,
         )
 
         self.device_ = device

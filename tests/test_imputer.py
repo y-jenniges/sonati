@@ -295,6 +295,84 @@ def test_fit_restores_true_best_not_last_snapshot(monkeypatch):
     assert model.weight.item() == 0.0
 
 
+def test_fit_reseeds_validation_generator_every_epoch(monkeypatch):
+    # fit() must reset the validation mask generator to the same
+    # state before every epoch's _eval_epoch call
+    from mastnet import _training
+
+    seen_states = []
+
+    # Set up dummy train/eval computations
+    def fake_train_epoch(model, *a, **k):
+        torch.rand(1)  # vary global-RNG consumption, as a real epoch would
+        return 0.1
+
+    def fake_eval_epoch(model, loader, loss_fn, mask_ratio, device, **kwargs):
+        gen = kwargs.get("generator")
+        seen_states.append(gen.get_state().clone() if gen is not None else None)
+        return 0.5
+
+    monkeypatch.setattr(_training, "_train_epoch", fake_train_epoch)
+    monkeypatch.setattr(_training, "_eval_epoch", fake_eval_epoch)
+
+    # Fit a dummy model
+    model = torch.nn.Linear(1, 1)
+    _training.fit(
+        model, train_loader=[], val_loader=[],
+        max_epochs=4, lr=1e-3, mask_ratio=0.5, patience=10,
+        device=torch.device("cpu"), verbose=False, seed=123,
+    )
+
+    # Ensure same generator states for all eval epochs
+    assert len(seen_states) == 4
+    assert all(s is not None for s in seen_states)
+    assert all(torch.equal(seen_states[0], s) for s in seen_states[1:])
+
+
+def test_eval_epoch_validation_masks_reproducible_across_epochs():
+    # With a generator (reseeded to the same value), _eval_epoch must
+    # draw identical masks and thus losses
+    from mastnet import _training
+
+    device = torch.device("cpu")
+
+    # Dummy data
+    rng = np.random.default_rng(0)
+    batch = {
+        "query_features": torch.as_tensor(rng.standard_normal((16, 4)), dtype=torch.float32),
+        "query_mask": torch.ones(16, 4, dtype=torch.bool),
+        "query_coords": torch.as_tensor(rng.standard_normal((16, 4)), dtype=torch.float32),
+    }
+    loader = [batch]
+
+    # Set up a dummy model
+    class DummyModel(torch.nn.Module):
+        def forward(self, batch):
+            B, F = batch["query_features"].shape
+            return torch.zeros(B, F), torch.zeros(B, F)
+
+    model = DummyModel()
+    loss_fn = _training._build_loss("mse")
+
+    losses = []
+    for i in range(3):
+        torch.rand(3 + i * 17)  # vary global RNG between "epochs"
+
+        # Set up validation mask generator
+        val_mask_generator = torch.Generator(device=device)
+        val_mask_generator.manual_seed(7)
+
+        # Compute loss during evaluation
+        losses.append(_training._eval_epoch(
+            model, loader, loss_fn, mask_ratio=0.5, device=device,
+            cylindrical_mask_size=0.5, cylindrical_mask_prob=0.5,
+            verbose=False, generator=val_mask_generator,
+        ))
+
+    # Ensure all losses are the same, i.e. eval masks were the same
+    assert losses[0] == losses[1] == losses[2]
+
+
 def test_precomputed_graph():
     # A graph built once with a larger k can be sliced and reused by fit
     X, coords = _dummy_data()
