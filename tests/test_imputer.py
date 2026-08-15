@@ -254,6 +254,47 @@ def test_fit_aborts_on_nonfinite_loss(monkeypatch, caplog):
     assert any("Non-finite loss" in r.getMessage() for r in caplog.records)
 
 
+def test_fit_restores_true_best_not_last_snapshot(monkeypatch):
+    # Regression test: the best-weights snapshot must only be taken when
+    # EarlyStopping itself counts the epoch as a new best. Previously, the
+    # snapshot used a looser condition (no delta) than EarlyStopping, so a
+    # run of epochs that each nudge below the stale best_loss without ever
+    # clearing the delta could overwrite an earlier, better
+    # snapshot with a later, worse one.
+    from mastnet import _training
+
+    # Example setup: Epoch 0 (val=1.0) is the only real best (clears the delta
+    # against the initial np.inf). Epochs 1 and 2 both beat the stale best_loss=1.0
+    # without clearing its delta margin, so patience=2 exhausts after epoch 2
+    val_losses = iter([1.0, 0.99995, 0.99998])
+    epoch_counter = {"i": -1}
+
+    # Use cheap, dummy train/eval functions
+    def fake_train_epoch(model, *a, **k):
+        epoch_counter["i"] += 1
+        with torch.no_grad():
+            model.weight.fill_(float(epoch_counter["i"]))  # tag weights with epoch id
+        return 0.1
+
+    def fake_eval_epoch(*a, **k):
+        return next(val_losses)
+
+    monkeypatch.setattr(_training, "_train_epoch", fake_train_epoch)
+    monkeypatch.setattr(_training, "_eval_epoch", fake_eval_epoch)
+
+    # Fit a dummy model
+    model = torch.nn.Linear(1, 1)  # dummy model
+    _training.fit(
+        model, train_loader=[], val_loader=[],
+        max_epochs=10, lr=1e-3, mask_ratio=0.5, patience=2,
+        device=torch.device("cpu"), verbose=False,
+    )
+
+    # Restored weights must be epoch 0's (the true best), not epoch 2's (the
+    # last snapshot taken under the old, buggy condition)
+    assert model.weight.item() == 0.0
+
+
 def test_precomputed_graph():
     # A graph built once with a larger k can be sliced and reused by fit
     X, coords = _dummy_data()

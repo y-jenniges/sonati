@@ -1,4 +1,4 @@
-"""Training loop, losses, and early stopping for MaSTNeT."""
+"""Training loop, losses and early stopping for MaSTNeT."""
 
 from copy import deepcopy
 from typing import Callable
@@ -38,7 +38,8 @@ def _masked_mse(pred: Tensor, target: Tensor, mask: Tensor) -> Tensor:
 
 def _heteroscedastic_nll(pred_mean: Tensor, pred_logvar: Tensor,
                          target: Tensor, mask: Tensor) -> Tensor:
-    """Gaussian NLL with predicted log-variance (Kendall & Gal 2017)."""
+    """Gaussian NLL with log-variance (Kendall & Gal 2017)."""
+    # Variance floored to match the model head's logvar clamp
     var = pred_logvar[mask].exp().clamp(min=_VAR_FLOOR)
     return (0.5 * (pred_logvar[mask] + (target[mask] - pred_mean[mask]) ** 2 / var)).mean()
 
@@ -93,9 +94,11 @@ def cylindrical_feature_mask(
     coords = batch["query_coords"][:, :3]  # Cartesian (x, y, z); no depth, no time
     B = coords.shape[0]
 
+    # Skip the block mask with probability 1 - p
     if torch.rand(1).item() > p:
         return torch.zeros(B, feature_dim, dtype=torch.bool, device=device)
 
+    # Pick a random centre point and mask every point within `size` of it
     idx = torch.randint(0, B, (1,), device=device)
     center = coords[idx]  # (1, 3)
     dist = torch.norm(coords - center, dim=1)  # (B,)
@@ -199,6 +202,15 @@ class EarlyStopping:
     min_delta_ratio : float, optional
         Minimum fractional improvement required to count as a new best,
         by default 1e-4.
+
+    Attributes
+    ----------
+    is_best : bool
+        Whether the most recent ``__call__`` counted as a new best (cleared
+        ``best_loss`` by more than the delta margin). Callers that snapshot
+        model weights should gate on this flag rather than re-deriving their
+        own "is this better" comparison, so the snapshot always agrees with
+        ``best_loss``/``best_epoch``.
     """
 
     def __init__(self, patience: int = 10, min_delta_ratio: float = 1e-4):
@@ -208,10 +220,18 @@ class EarlyStopping:
         self.counter = 0
         self.best_epoch = 0
         self.epoch = 0
+        self.is_best = False
 
     def __call__(self, val_loss: float) -> bool:
-        delta = max(1e-8, abs(val_loss) * self.min_delta_ratio)
-        if val_loss < self.best_loss - delta:
+        # Delta relative to the current best loss
+        first_call = math.isinf(self.best_loss)
+        delta = 0.0 if first_call else max(1e-8, abs(self.best_loss) * self.min_delta_ratio)
+
+        # Check if current epoch is the best (by delta)
+        self.is_best = val_loss < self.best_loss - delta
+
+        # Update state if current epoch is best
+        if self.is_best:
             self.best_loss = val_loss
             self.best_epoch = self.epoch
             self.counter = 0
@@ -233,7 +253,8 @@ def _train_epoch(
         grad_clip_norm: float = 1.0,
         verbose: bool = True,
 ) -> float:
-    """ Run one training epoch; return mean loss per observed value.
+    """
+    Run one training epoch and return mean loss per observed value.
 
     Batches with a non-finite loss are skipped (no optimiser step) so a single
     diverging batch cannot poison the model weights. Returns ``nan`` when every
@@ -243,6 +264,8 @@ def _train_epoch(
     total, n, n_skipped = 0.0, 0, 0
     for batch in tqdm(loader, desc="  train", leave=False, disable=not _tqdm_ok(verbose)):
         batch = _to_device(batch, device)
+
+        # Apply masking
         batch, loss_mask = _apply_random_mask(
             batch, mask_ratio, device,
             cylindrical_mask_size=cylindrical_mask_size,
@@ -250,17 +273,23 @@ def _train_epoch(
         )
         if not loss_mask.any():
             continue
+
+        # Forward pass and loss on the masked positions only
         pred_mean, pred_logvar = model(batch)
         target = batch["query_features"]
         loss = loss_fn(pred_mean, pred_logvar, target, loss_mask)
         if not torch.isfinite(loss):
             n_skipped += 1
             continue
+
+        # Backward pass with optional gradient clipping
         optimizer.zero_grad()
         loss.backward()
         if grad_clip_norm and grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
         optimizer.step()
+
+        # Aggregate loss
         total += loss.item() * loss_mask.sum().item()
         n += loss_mask.sum().item()
     if n_skipped:
@@ -288,6 +317,8 @@ def _eval_epoch(
         )
         if not loss_mask.any():
             continue
+
+        # Forward pass only, no optimiser step
         pred_mean, pred_logvar = model(batch)
         target = batch["query_features"]
         loss = loss_fn(pred_mean, pred_logvar, target, loss_mask)
@@ -299,7 +330,7 @@ def _eval_epoch(
 @torch.no_grad()
 def reconstruct(model, loader: DataLoader, device: torch.device, verbose: bool = True) -> Tensor:
     """
-    Run full reconstruction without masking; return predicted means.
+    Run full reconstruction without masking and return predicted means.
 
     Parameters
     ----------
@@ -384,6 +415,7 @@ def reconstruct_with_uncertainty(
 
     model.eval()
 
+    # Aggregate the n_inference passes into mean/aleatoric/epistemic uncertainty
     stacked_means = torch.stack(all_means)  # (n_inference, n, F)
     stacked_logvars = torch.stack(all_logvars)  # (n_inference, n, F)
 
@@ -453,6 +485,7 @@ def fit(
     val_history: list[float] = []
 
     for epoch in tqdm(range(max_epochs), desc="Training", unit="epoch", disable=not _tqdm_ok(verbose)):
+        # One training epoch, one validation epoch
         train_loss = _train_epoch(
             model, train_loader, optimizer, loss_fn, mask_ratio, device,
             cylindrical_mask_size=cylindrical_mask_size,
@@ -467,12 +500,12 @@ def fit(
             verbose=verbose,
         )
 
-        if val_loss < stopper.best_loss:
-            # A new best that beats the previous one by far more than the
-            # typical epoch-to-epoch change is often a pre-divergence artifact
-            # rather than a genuinely better model (see TODO item on hetero
-            # instability); warn so such runs can be inspected.
-            improvement = stopper.best_loss - val_loss
+        # Snapshot weights only when stopper agrees this is a genuine best
+        prev_best_loss = stopper.best_loss
+        should_stop = stopper(val_loss)
+        if stopper.is_best:
+            # A new best beating the previous one by too much, may need inspection
+            improvement = prev_best_loss - val_loss
             if len(val_history) >= 5:
                 median_step = float(np.median(np.abs(np.diff(val_history))))
                 if median_step > 0 and improvement > 5 * median_step:
@@ -483,9 +516,9 @@ def fit(
                         improvement, epoch, median_step,
                     )
             best_state = deepcopy(model.state_dict())
-        should_stop = stopper(val_loss)
         val_history.append(val_loss)
 
+        # Log epoch summary
         msg = (
             f"[{strftime('%d-%m-%Y %H:%M:%S')}] Epoch {epoch:03d}/{max_epochs}"
             f" | train={train_loss:.4f} | val={val_loss:.4f}"
@@ -495,6 +528,7 @@ def fit(
         if _tqdm_ok(verbose):
             tqdm.write(msg)
 
+        # Abort immediately on a non-finite loss
         if not (np.isfinite(train_loss) and np.isfinite(val_loss)):
             abort_msg = (
                 f"[{strftime('%d-%m-%Y %H:%M:%S')}] Non-finite loss at epoch {epoch} "
@@ -506,6 +540,7 @@ def fit(
                 tqdm.write(abort_msg)
             break
 
+        # Stop once patience is exhausted
         if should_stop:
             stop_msg = f"[{strftime('%d-%m-%Y %H:%M:%S')}] Early stopping at epoch {epoch} (best={stopper.best_epoch})"
             logger.info(stop_msg)
@@ -513,4 +548,5 @@ def fit(
                 tqdm.write(stop_msg)
             break
 
+    # Restore the best weights
     model.load_state_dict(best_state)
