@@ -14,7 +14,7 @@ def _knn_indices(coords: np.ndarray, k: int, n_jobs: int | None = None,
                   query_chunk_size: int = 5_000_000) -> torch.Tensor:
     """
     Return (n, k) neighbour indices excluding self.
-    Stored as int32 rather than the default int64 and queried in chunks
+    Stored as int32 (not default int64) and queried in chunks
     to reduce memory.
 
     Parameters
@@ -40,6 +40,13 @@ def _knn_indices(coords: np.ndarray, k: int, n_jobs: int | None = None,
         chunk_idx = nbrs.kneighbors(coords[start:stop], n_neighbors=k + 1, return_distance=False)
         # Fill results array
         result[start:stop] = chunk_idx[:, 1:]
+
+    # Shut down joblib's executor used to compute the neighbourhood graph in parallel
+    # (otherwise it could block DataLoader fork later)
+    if n_jobs not in (None, 1):
+        from joblib.externals.loky import get_reusable_executor
+        get_reusable_executor().shutdown(wait=True)
+
     return torch.from_numpy(result)
 
 
