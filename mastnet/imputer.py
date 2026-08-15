@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 from mastnet._graph import NeighbourDataset, build_graph, precompute_graph
 from mastnet._model import MaSTNeT
-from mastnet._preprocessing import inverse_transform, preprocess
+from mastnet._preprocessing import inverse_transform, inverse_transform_std, preprocess
 from mastnet._training import fit, reconstruct, reconstruct_with_uncertainty
 
 
@@ -623,9 +623,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X_imputed : ndarray of shape (n_samples, n_features)
             Copy of ``X`` with ``NaN`` positions filled by the mean prediction.
         aleatoric_std : ndarray of shape (n_samples, n_features)
-            Per-point aleatoric (data) uncertainty: ``sqrt(mean(exp(logvar)))``.
+            Per-point aleatoric (data) uncertainty, in physical units
         epistemic_std : ndarray of shape (n_samples, n_features)
-            Per-point epistemic (model) uncertainty: std of means across MC passes.
+            Per-point epistemic (model) uncertainty, in physical units
         realisations : ndarray of shape (n_inference, n_samples, n_features), optional
             Only returned when ``return_realisations=True``: the individual
             per-pass mean predictions, inverse-transformed to physical units.
@@ -657,12 +657,10 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         else:
             mean_t, aleatoric_t, epistemic_t = result
 
-        # Unscale predictions
+        # Unscale predictions and uncertainties to physical units
         mean_np = inverse_transform(mean_t.numpy(), self.scaler_dict_, self.feature_names_)
-
-        # Convert to numpy
-        aleatoric_np = aleatoric_t.numpy()
-        epistemic_np = epistemic_t.numpy()
+        aleatoric_np = inverse_transform_std(aleatoric_t.numpy(), self.scaler_dict_, self.feature_names_)
+        epistemic_np = inverse_transform_std(epistemic_t.numpy(), self.scaler_dict_, self.feature_names_)
 
         X_out = X.copy()
         X_out[np.isnan(X_out)] = mean_np[np.isnan(X_out)]

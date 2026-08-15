@@ -107,6 +107,39 @@ def test_predict_with_uncertainty_realisations():
     assert len(result) == 3
 
 
+def test_predict_with_uncertainty_physical_units(monkeypatch):
+    # aleatoric_std/epistemic_std must be in physical units (scaled by each
+    # feature's data_range_), not MinMax-scaled [0, 1] units. As MC-dropout is
+    # stochastic, the scaled output is intercepted via monkeypatch
+    # rather than recomputed in a second, random call.
+    from mastnet import imputer as imputer_module
+
+    # Set up dummy data
+    X, coords = _dummy_data()
+
+    # Fit imputer
+    imputer = MaSTNetImputer(**_FAST)
+    imputer.fit(X, coords)
+
+    # Intercept the single stochastic reconstruction call to capture its
+    # scaled output, instead of triggering a second random draw
+    raw = {}
+    original = imputer_module.reconstruct_with_uncertainty
+
+    def _capture(*args, **kwargs):
+        result = original(*args, **kwargs)  # unchanged, still stochastic
+        raw["aleatoric"], raw["epistemic"] = result[1].numpy(), result[2].numpy()  # side-channel copy
+        return result
+
+    monkeypatch.setattr(imputer_module, "reconstruct_with_uncertainty", _capture)
+    _, aleatoric_std, epistemic_std = imputer.predict_with_uncertainty(X, coords)
+
+    # Check if unscaling worked correctly
+    ranges = np.array([imputer.scaler_dict_[name].data_range_[0] for name in imputer.feature_names_])
+    np.testing.assert_allclose(aleatoric_std, raw["aleatoric"] * ranges, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(epistemic_std, raw["epistemic"] * ranges, rtol=1e-5, atol=1e-6)
+
+
 def test_cyclic_time():
     # Random data with cyclic time
     rng = np.random.default_rng(1)

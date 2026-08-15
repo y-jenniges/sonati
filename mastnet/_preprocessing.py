@@ -119,3 +119,30 @@ def inverse_transform(values_scaled: np.ndarray, scaler_dict: dict,
                 out[:, i].reshape(-1, 1)
             ).flatten()
     return out
+
+
+def inverse_transform_std(std_scaled: np.ndarray, scaler_dict: dict,
+                          feature_names: list[str]) -> np.ndarray:
+    """
+    Convert per-feature MinMax-scaled standard deviations to physical units.
+
+    As MinMaxScaler is affine, the offset (x_min) is ignored and only the
+    data range is applied.
+
+    Parameters
+    ----------
+    std_scaled : ndarray of shape (n, n_features)
+    scaler_dict : dict
+        Fitted scalers stored by feature name, as returned by :func:`preprocess`.
+    feature_names : list of str
+
+    Returns
+    -------
+    ndarray of shape (n, n_features)
+        Standard deviations in the original (unscaled) units.
+    """
+    out = std_scaled.copy()
+    for i, name in enumerate(feature_names):
+        if name in scaler_dict:
+            out[:, i] = out[:, i] * scaler_dict[name].data_range_[0]
+    return out
