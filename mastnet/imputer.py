@@ -1,4 +1,6 @@
-"""MaSTNetImputer - sklearn-compatible spatio-temporal imputer."""
+"""MaSTNetImputer - Masked Spatio-Temporal Neighbourhood Transformer,
+a sklearn-compatible spatio-temporal imputer.
+"""
 
 import logging
 from time import time
@@ -41,9 +43,8 @@ def _nan_aware_equal(a: Tensor, b: Tensor) -> bool:
 
 class MaSTNetImputer(BaseEstimator, TransformerMixin):
     """
-    Sklearn-compatible imputer using MaSTNeT (Masked Spatio-temporal Neighbourhood Transformer).
-
-    MaSTNeT reconstructs missing values by attending to k-nearest spatial and j-nearest
+    MaSTNeT (Masked Spatio-temporal Neighbourhood Transformer)
+    reconstructs missing values by attending to k-nearest spatial and j-nearest
     temporal neighbours in a factorised cross-attention architecture. A
     heteroscedastic output head provides per-point uncertainty estimates.
 
@@ -51,9 +52,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         ``[latitude (°), longitude (°), depth (m), time]``
 
-    Latitude and longitude are mapped internally to Cartesian sphere coordinates.
-    Depth and time are MinMax-scaled. Features are scaled independently per
-    variable on observed values only.
+    Internally, latitude and longitude are mapped to unit sphere coordinates,
+    depth and time are MinMax-scaled. Features are MinMax-scaled on
+    observed values only.
 
     Parameters
     ----------
@@ -161,6 +162,12 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     pin_memory : bool, default=False
         Passed to every internal ``DataLoader``. Speeds up host-to-device
         transfer on GPU. No effect on CPU.
+    inference_num_workers : int, default=0
+        Worker processes for :meth:`transform` / :meth:`predict_with_uncertainty`
+        when called on data that doesn't match the training data (so
+        ``full_loader_`` can't be reused). Uses ``multiprocessing_context='spawn'``,
+        since the model is already on ``device`` by then and forking would be
+        unsafe.
 
     Attributes
     ----------
@@ -225,6 +232,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             n_jobs: int | None = None,
             num_workers: int = 0,
             pin_memory: bool = False,
+            inference_num_workers: int = 0,
     ):
         self.n_neighbours_space = n_neighbours_space
         self.n_neighbours_time = n_neighbours_time
@@ -258,6 +266,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.n_jobs = n_jobs
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.inference_num_workers = inference_num_workers
 
     def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return (train_idx, val_idx) from ``val_indices`` if given, else according to ``val_method``."""
@@ -321,9 +330,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         """
         Return the k-NN graph for inference coordinates.
 
-        Reuses the graph built during :meth:`fit` when ``coords_scaled`` is
-        identical to the training coordinates (the common transform-after-fit
-        case), skipping a rebuild that can take many minutes on large datasets.
+        Reuses the graph built during :meth:`fit` if ``coords_scaled`` is
+        identical to the training coordinates for efficiency.
         """
         # Skip graph building
         if torch.equal(coords_scaled, self.coords_full_):
@@ -342,24 +350,37 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         return graph
 
     def _make_loader(self, coords, values, graph, indices=None, shuffle=False,
-                     generator=None, neighbour_values=None, num_workers=0):
+                     generator=None, neighbour_values=None, num_workers=0,
+                     multiprocessing_context=None):
+        # Create dataset
         ds = NeighbourDataset(coords, values, graph, query_indices=indices,
                               neighbour_values=neighbour_values)
+
+        # Return data loader
         return DataLoader(ds, batch_size=self.batch_size, shuffle=shuffle,
                           generator=generator if shuffle else None,
                           num_workers=num_workers, pin_memory=self.pin_memory,
-                          persistent_workers=num_workers > 0)
+                          persistent_workers=num_workers > 0,
+                          multiprocessing_context=multiprocessing_context if num_workers > 0 else None)
 
     def _inference_loader(self, coords_scaled: torch.Tensor, values_scaled: torch.Tensor,
                           graph: Dict[str, Tensor]) -> DataLoader:
         """Re-use full_loader_ (parallel, forked pre-CUDA) if coords and values match
-        the training data. Otherwise, use a fresh num_workers=0 loader (model is
-        already on device by now, so forking here would be unsafe)."""
+        the training data. Otherwise, use inference_num_workers via 'spawn' (the
+        model is already on device by now, so forking would be unsafe)."""
+        # Check if coordinates match training data
         if (torch.equal(coords_scaled, self.coords_full_)
                 and _nan_aware_equal(values_scaled, self.values_full_)):
-            logger.info("Coordinates and values match the training data; reusing the DataLoader from fit().")
+            logger.info("Coordinates and values match the training data -> reusing the DataLoader from fit().")
             return self.full_loader_
-        return self._make_loader(coords_scaled, values_scaled, graph)
+
+        # Otherwise use multiprocessing_context
+        if self.inference_num_workers > 0:
+            logger.info("Loading new inference data with %d spawned DataLoader worker(s)...",
+                       self.inference_num_workers)
+        return self._make_loader(coords_scaled, values_scaled, graph,
+                                 num_workers=self.inference_num_workers,
+                                 multiprocessing_context="spawn")
 
     # ------------------------------------------------------------------
     # Sklearn API
