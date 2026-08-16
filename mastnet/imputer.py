@@ -468,25 +468,24 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.graph_ = graph
 
         # Loaders (train/val hide validation values from neighbourhoods)
+        # Forkserver avoids deadlocks from graph building leftovers
         train_loader = self._make_loader(coords_full, values_full, graph,
                                          indices=train_idx, shuffle=True,
                                          generator=generator,
                                          neighbour_values=neighbour_values,
-                                         num_workers=self.num_workers)
+                                         num_workers=self.num_workers,
+                                         multiprocessing_context="forkserver")
         val_loader = self._make_loader(coords_full, values_full, graph,
                                        indices=val_idx,
                                        neighbour_values=neighbour_values,
-                                       num_workers=self.num_workers)
+                                       num_workers=self.num_workers,
+                                       multiprocessing_context="forkserver")
         self.full_loader_ = self._make_loader(coords_full, values_full, graph,
-                                              num_workers=self.num_workers)
+                                              num_workers=self.num_workers,
+                                              multiprocessing_context="forkserver")
 
         if self.num_workers > 0:
-            # Force the loaders' worker processes to fork now, while the
-            # process is still CUDA-free. Forking after model.to(device)
-            # below would fork with an already-initialised CUDA context,
-            # which is unsafe. persistent_workers=True (set in
-            # _make_loader) keeps this same worker pool alive for every
-            # later epoch, so this is the only fork each loader ever does.
+            # Warming up data loaders (required only when not using forkserver)
             logger.info("Starting %d DataLoader worker(s) before moving the model to %s...",
                        self.num_workers, device)
             next(iter(train_loader))
