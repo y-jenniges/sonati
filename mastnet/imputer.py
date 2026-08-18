@@ -484,14 +484,6 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
                                               num_workers=self.num_workers,
                                               multiprocessing_context="forkserver")
 
-        if self.num_workers > 0:
-            # Warming up data loaders (required only when not using forkserver)
-            logger.info("Starting %d DataLoader worker(s) before moving the model to %s...",
-                       self.num_workers, device)
-            next(iter(train_loader))
-            next(iter(val_loader))
-            next(iter(self.full_loader_))
-
         # Model
         coord_dim = coords_full.shape[1]
         self.model_ = MaSTNeT(
@@ -665,6 +657,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X_out = X.copy()
         X_out[np.isnan(X_out)] = mean_np[np.isnan(X_out)]
 
+        # Return all inference passes if requested
         if return_realisations:
             n_inference, n_samples, n_features = realisations_t.shape
             realisations_np = inverse_transform(
