@@ -407,38 +407,60 @@ def reconstruct_with_uncertainty(
         Only returned when ``return_realisations=True``: the individual
         per-pass mean predictions.
     """
-    model.train()  # activates dropout
-    all_means: list[Tensor] = []
-    all_logvars: list[Tensor] = []
+    model.train()  # activate dropout
+
+    # Online mean/variance across passes (Welford 1962, less memory-intense)
+    final_mean: Tensor | None = None
+    m2: Tensor | None = None
+    sum_exp_logvar: Tensor | None = None
+    realisations: Tensor | None = None
 
     with torch.no_grad():
+        # Iterate over inferences
         for i in tqdm(range(n_inference), desc="MC inference", disable=not _tqdm_ok(verbose)):
             t0 = time()
             batch_means: list[Tensor] = []
             batch_logvars: list[Tensor] = []
+
+            # Iterate over batches and get mean and variances
             for batch in loader:
                 batch = _to_device(batch, device)
                 pred_mean, pred_logvar = model(batch)
                 batch_means.append(pred_mean.cpu())
                 batch_logvars.append(pred_logvar.cpu())
-            all_means.append(torch.cat(batch_means))
-            all_logvars.append(torch.cat(batch_logvars))
+            pass_mean = torch.cat(batch_means)
+            pass_logvar = torch.cat(batch_logvars)
+
+            if final_mean is None:
+                # First iteration
+                final_mean = pass_mean.clone()
+                m2 = torch.zeros_like(pass_mean)  # sum of squared deviations
+                sum_exp_logvar = pass_logvar.exp()
+            else:
+                # Aggregate later iterations
+                delta = pass_mean - final_mean
+                final_mean += delta / (i + 1)  # running mean
+                m2 += delta * (pass_mean - final_mean)  # Welford update
+                sum_exp_logvar += pass_logvar.exp()
+
+            # Collect realisations if requested
+            if return_realisations:
+                if realisations is None:
+                    realisations = pass_mean.new_empty((n_inference, *pass_mean.shape))
+                realisations[i] = pass_mean
+
             logger.info("MC inference pass %d/%d finished in %.1fs.",
                         i + 1, n_inference, time() - t0)
 
-    model.eval()
+    model.eval()  # deactivate dropout
 
-    # Aggregate the n_inference passes into mean/aleatoric/epistemic uncertainty
-    stacked_means = torch.stack(all_means)  # (n_inference, n, F)
-    stacked_logvars = torch.stack(all_logvars)  # (n_inference, n, F)
-
-    mean = stacked_means.mean(0)
-    epistemic_std = stacked_means.std(0, correction=0)
-    aleatoric_std = stacked_logvars.exp().mean(0).sqrt()  # sqrt(mean(exp(logvar)))
+    # Compute std from variances
+    epistemic_std = (m2 / n_inference).sqrt()
+    aleatoric_std = (sum_exp_logvar / n_inference).sqrt()  # sqrt(mean(exp(logvar)))
 
     if return_realisations:
-        return mean, aleatoric_std, epistemic_std, stacked_means
-    return mean, aleatoric_std, epistemic_std
+        return final_mean, aleatoric_std, epistemic_std, realisations
+    return final_mean, aleatoric_std, epistemic_std
 
 
 def fit(
