@@ -1,4 +1,4 @@
-"""MaSTNeT model - factorised space-time cross-attention imputer."""
+"""MaSTNeT model - factorised time-space cross-attention imputer."""
 
 import torch
 import torch.nn as nn
@@ -39,9 +39,9 @@ class MaSTNeT(nn.Module):
     """
     Masked Spatio-temporal Neighbourhood Transformer.
 
-    Reconstructs missing values in spatiotemporal point-cloud data by attending
-    to k-nearest spatial neighbours first, then k-nearest temporal neighbours
-    (factorised space-time cross-attention).
+    Reconstructs missing values in spatio-temporal point-cloud data by attending
+    to k-nearest temporal neighbours first, then k-nearest spatial neighbours
+    (factorised time-space cross-attention).
 
     The model outputs a per-point mean **and** log-variance for every feature,
     supporting heteroscedastic uncertainty quantification.
@@ -65,9 +65,6 @@ class MaSTNeT(nn.Module):
         Hidden width of the feedforward sublayer in each attention block.
     dropout : float
         Dropout probability (active only during training).
-    use_masks : bool
-        If True, append the binary observation mask to each token, giving the
-        model explicit knowledge of which features are observed vs. filled.
     fill_strategy : str
         How to fill unobserved feature positions before computing attention:
         ``'zero'`` fills with 0; ``'mean'`` fills with the per-feature global
@@ -87,14 +84,12 @@ class MaSTNeT(nn.Module):
             n_temporal_layers: int = 3,
             dim_feedforward: int = 128,
             dropout: float = 0.1,
-            use_masks: bool = True,
             fill_strategy: str = "zero",
             global_means=None,
     ):
         super().__init__()
         self.n_features = n_features
         self.coord_dim = coord_dim
-        self.use_masks = use_masks
         self.fill_strategy = fill_strategy
 
         if global_means is not None:
@@ -104,15 +99,15 @@ class MaSTNeT(nn.Module):
         else:
             self.global_means = None
 
-        # Feature mixer: small MLP applied to filled features before token construction
+        # Feature mixer: Small MLP mixing filled features and missingness information
         self.feature_mixer = nn.Sequential(
-            nn.Linear(n_features, n_features),
+            nn.Linear(n_features * 2, n_features),
             nn.ReLU(),
             nn.Linear(n_features, n_features),
         )
 
         # Input projection
-        token_dim = coord_dim + n_features + (n_features if use_masks else 0)
+        token_dim = coord_dim + n_features
         self.input_proj = nn.Linear(token_dim, d_model)
 
         # Spatial layers
@@ -140,14 +135,10 @@ class MaSTNeT(nn.Module):
         return torch.where(mask, features, fill)
 
     def _token(self, coords: Tensor, features: Tensor, mask: Tensor) -> Tensor:
-        """Fill, mix, then concatenate features with coordinates, and optionally the observation mask."""
+        """Fill, mix in the missingness mask, then concatenate the mixed features with coordinates."""
         filled = self._fill(features, mask)
-        # mixed = filled + self.feature_mixer(filled)  # residual: preserves signal when mixer is unhelpful
-        mixed = self.feature_mixer(filled)
-        parts = [coords, mixed]
-        if self.use_masks:
-            parts.append(mask.float())
-        return torch.cat(parts, dim=-1)
+        mixed = self.feature_mixer(torch.cat([filled, mask.float()], dim=-1))
+        return torch.cat([coords, mixed], dim=-1)
 
     # ------------------------------------------------------------------
 
@@ -159,9 +150,9 @@ class MaSTNeT(nn.Module):
             - ``query_features`` (B, F)
             - ``query_mask`` (B, F) bool - True = observed
             - ``query_coords`` (B, C)
-            - ``space`` dict with ``features`` (B, K, F), ``mask`` (B, K, F),
-                                  ``coords`` (B, K, C)
-            - ``time`` same structure as ``space``
+            - ``time`` dict with ``features`` (B, K, F), ``mask`` (B, K, F),
+                                 ``coords`` (B, K, C)
+            - ``space`` same structure as ``time``
 
         Returns
         -------
@@ -175,8 +166,8 @@ class MaSTNeT(nn.Module):
             self._token(batch["query_coords"], batch["query_features"], batch["query_mask"])
         ).unsqueeze(1)  # (B, 1, D)
 
-        # Iterate over scopes
-        for scope, layers in (("space", self.spatial_layers), ("time", self.temporal_layers)):
+        # Iterate over scopes (time first, then space)
+        for scope, layers in (("time", self.temporal_layers), ("space", self.spatial_layers)):
             nb = batch[scope]
 
             # Project neighbour tokens

@@ -1,6 +1,6 @@
 # MaSTNeT — Masked Spatio-Temporal Neighbourhood Transformer
 
-`mastnet` is a Python package for imputing missing values in sparse spatiotemporal data. It implements **MaSTNeT**, a transformer that attends separately to the k-nearest spatial and temporal neighbours of each query point and returns both a reconstructed value and a per-point uncertainty estimate.
+`mastnet` is a Python package for imputing missing values in sparse spatiotemporal data. It implements **MaSTNeT**, a transformer that attends separately to the k-nearest temporal, then spatial, neighbours of each query point and returns both a reconstructed value and a per-point uncertainty estimate.
 
 The model was developed for oceanographic in-situ observations but applies to any point-cloud data with latitude, longitude, depth, and time coordinates.
 
@@ -85,7 +85,6 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 | `n_temporal_layers` | 3 | Cross-attention layers over temporal neighbourhood                                                                     |
 | `dim_feedforward` | 128 | Feedforward sublayer width                                                                                             |
 | `dropout` | 0.1 | Dropout rate (training only)                                                                                           |
-| `use_masks` | `True` | Append binary observation mask to each token                                                                           |
 | `fill_strategy` | `'zero'` | Fill unobserved positions with `'zero'` or `'mean'`                                                                    |
 | `loss_name` | `'hetero'` | `'hetero'` (Gaussian NLL + variance head) or `'mse'`                                                                   |
 | `max_epochs` | 100 | Training epoch limit                                                                                                   |

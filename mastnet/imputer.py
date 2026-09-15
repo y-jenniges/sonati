@@ -44,9 +44,12 @@ def _nan_aware_equal(a: Tensor, b: Tensor) -> bool:
 class MaSTNetImputer(BaseEstimator, TransformerMixin):
     """
     MaSTNeT (Masked Spatio-temporal Neighbourhood Transformer)
-    reconstructs missing values by attending to k-nearest spatial and j-nearest
-    temporal neighbours in a factorised cross-attention architecture. A
-    heteroscedastic output head provides per-point uncertainty estimates.
+    reconstructs missing values by attending to k-nearest temporal and
+    j-nearest spatial neighbours (in that order) in a factorised cross-attention
+    architecture. Missingness enters the model only through a feature mixer
+    applied to each token's values (mixing them with the observation mask)
+    before attention. A heteroscedastic output head provides per-point
+    uncertainty estimates.
 
     Coordinates are expected as four columns in this order:
 
@@ -74,8 +77,6 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         Feedforward sublayer width inside each attention block.
     dropout : float, default=0.1
         Dropout rate.
-    use_masks : bool, default=True
-        Append the binary observation mask to each token.
     fill_strategy : str, default='zero'
         How to fill unobserved positions before attention: ``'zero'`` or
         ``'mean'`` (global per-feature mean estimated from training data).
@@ -187,7 +188,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     >>> rng = np.random.default_rng(0)
     >>> n = 500
     >>> X = rng.standard_normal((n, 6))
-    >>> X[rng.random((n, 6)) < 0.3] = np.nan          # 30 % missing
+    >>> X[rng.random((n, 6)) < 0.3] = np.nan           # 30 % missing
     >>> coords = np.column_stack([
     ...     rng.uniform(-90, 90, n),                   # latitude
     ...     rng.uniform(-180, 180, n),                 # longitude
@@ -208,7 +209,6 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             n_temporal_layers: int = 3,
             dim_feedforward: int = 128,
             dropout: float = 0.1,
-            use_masks: bool = True,
             fill_strategy: str = "zero",
             loss_name: str = "hetero",
             max_epochs: int = 100,
@@ -242,7 +242,6 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.n_temporal_layers = n_temporal_layers
         self.dim_feedforward = dim_feedforward
         self.dropout = dropout
-        self.use_masks = use_masks
         self.fill_strategy = fill_strategy
         self.loss_name = loss_name
         self.max_epochs = max_epochs
@@ -495,7 +494,6 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             n_temporal_layers=self.n_temporal_layers,
             dim_feedforward=self.dim_feedforward,
             dropout=self.dropout,
-            use_masks=self.use_masks,
             fill_strategy=self.fill_strategy,
             global_means=global_means if self.fill_strategy == "mean" else None,
         ).to(device)
