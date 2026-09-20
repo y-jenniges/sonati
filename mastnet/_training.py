@@ -13,6 +13,7 @@ import logging
 import sys
 from time import strftime, time
 
+from mastnet._masking import mask_batch
 from mastnet._model import LOGVAR_CLAMP
 
 logger = logging.getLogger(__name__)
@@ -52,140 +53,6 @@ def _build_loss(loss_name: str) -> Callable:
         return _heteroscedastic_nll
     else:
         raise ValueError(f"Unknown loss_name '{loss_name}'. Choose 'mse' or 'hetero'.")
-
-
-# ------------------------------------------------------------------
-# Masking
-# ------------------------------------------------------------------
-
-def cylindrical_feature_mask(
-        batch: dict,
-        feature_dim: int,
-        size: float = 0.1,
-        p: float = 0.3,
-        device: torch.device = torch.device("cpu"),
-        generator: torch.Generator | None = None,
-) -> Tensor:
-    """
-    Block-mask all features of every query point inside a spatial cylinder.
-
-    The "cylinder" is defined by a disk of radius ``size`` in the Cartesian
-    (x, y, z) subspace of ``query_coords`` (columns 0–2 after preprocessing).
-    Because depth is excluded from the distance calculation, all depths at a
-    given horizontal position fall inside the cylinder together.
-
-    Applied with probability ``p``; returns an all-False mask otherwise.
-
-    Parameters
-    ----------
-    batch : dict
-        Batch dict from :class:`mastnet._graph.NeighbourDataset`.
-    feature_dim : int
-        Number of features (``F``).
-    size : float, default=0.1
-        Cylinder radius in Cartesian coordinate space.
-    p : float, default=0.3
-        Probability of applying the mask on any given call.
-    device : torch.device
-    generator : torch.Generator, optional
-        Draw from this generator (must live on ``device``) instead of the
-        global RNG. Passed by :func:`fit` for validation batches so the same
-        mask is redrawn every epoch (instead of a fresh random one). Training
-        keeps using the global RNG.
-
-    Returns
-    -------
-    Tensor of shape (B, F), dtype bool
-    """
-    coords = batch["query_coords"][:, :3]  # Cartesian (x, y, z); no depth, no time
-    B = coords.shape[0]
-
-    # Skip the block mask with probability 1 - p
-    if torch.rand(1, device=device, generator=generator).item() > p:
-        return torch.zeros(B, feature_dim, dtype=torch.bool, device=device)
-
-    # Pick a random centre point and mask every point within `size` of it
-    idx = torch.randint(0, B, (1,), device=device, generator=generator)
-    center = coords[idx]  # (1, 3)
-    dist = torch.norm(coords - center, dim=1)  # (B,)
-    mask_block = dist < size  # (B,)
-
-    return mask_block.unsqueeze(1).expand(B, feature_dim)
-
-
-def _apply_random_mask(
-        batch: dict,
-        mask_ratio: float,
-        device: torch.device,
-        cylindrical_mask_size: float = 0.0,
-        cylindrical_mask_prob: float = 0.0,
-        generator: torch.Generator | None = None,
-) -> tuple[dict, Tensor]:
-    """
-    Hide a fraction of the observed query features (random + optional cylindrical block).
-
-    Parameters
-    ----------
-    batch : dict
-        Batch dict from :class:`mastnet._graph.NeighbourDataset`.
-    mask_ratio : float
-        Fraction of observed query values to hide for reconstruction.
-    device : torch.device
-    cylindrical_mask_size : float, default=0.0
-        Cylinder radius for the block mask; ignored when ``cylindrical_mask_prob=0``.
-    cylindrical_mask_prob : float, default=0.0
-        Probability of applying the cylindrical block mask per batch step.
-        Set to ``0`` to disable.
-    generator : torch.Generator, optional
-        Draw from this generator (must live on ``device``) instead of the
-        global RNG. See :func:`fit`.
-
-    Returns
-    -------
-    batch : dict
-        Shallow copy with ``query_mask`` and neighbour masks reduced.
-    loss_mask : Tensor of shape (B, F)
-        Boolean mask selecting positions to compute reconstruction loss on.
-    """
-    q_mask = batch["query_mask"]  # (B, F) bool - truly observed
-    B, F = q_mask.shape
-
-    # Random per-sample masking
-    n_mask = max(1, int(F * mask_ratio))  # number of features to hide
-    rand_idx = torch.rand(B, F, device=device, generator=generator).argsort(dim=1)  # idxs to hide
-    rand = torch.zeros(B, F, dtype=torch.bool, device=device)  # init bool array
-    rand.scatter_(1, rand_idx[:, :n_mask], True)  # hide features
-
-    # Apply cylindrical masking
-    if cylindrical_mask_prob > 0.0:
-        cyl = cylindrical_feature_mask(
-            batch, F,
-            size=cylindrical_mask_size,
-            p=cylindrical_mask_prob,
-            device=device,
-            generator=generator,
-        )
-        rand = rand | cyl
-
-    input_mask = q_mask & ~rand  # model sees these
-    loss_mask = q_mask & rand  # reconstruct these
-
-    # Also independently mask some neighbour features to prevent shortcut copying
-    batch = {**batch, "query_mask": input_mask}  # shallow copy
-    for scope in ("space", "time"):
-        if scope in batch:
-            nb = batch[scope]
-            nb_mask = nb["mask"]
-            B_nb, K, F_nb = nb_mask.shape
-
-            # Random masking
-            n_mask_count = max(1, int(F_nb * mask_ratio))  # number of features to hide
-            rand_idx = torch.rand(B_nb, K, F_nb, device=device, generator=generator).argsort(dim=2)  # idxs to hide
-            nb_rand = torch.zeros(B_nb, K, F_nb, dtype=torch.bool, device=device)  # init bool array
-            nb_rand.scatter_(2, rand_idx[:, :, :n_mask_count], True)  # hide features
-            batch[scope] = {**nb, "mask": nb_mask & ~nb_rand}  # store
-
-    return batch, loss_mask
 
 
 def _to_device(obj, device: torch.device):
@@ -258,9 +125,8 @@ class EarlyStopping:
 
 def _train_epoch(
         model, loader: DataLoader, optimizer, loss_fn: Callable,
-        mask_ratio: float, device: torch.device,
-        cylindrical_mask_size: float = 0.0,
-        cylindrical_mask_prob: float = 0.0,
+        masking: list, device: torch.device,
+        donor_pool_mask: Tensor | None = None,
         grad_clip_norm: float = 1.0,
         verbose: bool = True,
 ) -> float:
@@ -277,11 +143,7 @@ def _train_epoch(
         batch = _to_device(batch, device)
 
         # Apply masking
-        batch, loss_mask = _apply_random_mask(
-            batch, mask_ratio, device,
-            cylindrical_mask_size=cylindrical_mask_size,
-            cylindrical_mask_prob=cylindrical_mask_prob,
-        )
+        batch, loss_mask = mask_batch(batch, masking, device, donor_pool_mask=donor_pool_mask)
         if not loss_mask.any():
             continue
 
@@ -311,9 +173,8 @@ def _train_epoch(
 @torch.no_grad()
 def _eval_epoch(
         model, loader: DataLoader, loss_fn: Callable,
-        mask_ratio: float, device: torch.device,
-        cylindrical_mask_size: float = 0.0,
-        cylindrical_mask_prob: float = 0.0,
+        masking: list, device: torch.device,
+        donor_pool_mask: Tensor | None = None,
         verbose: bool = True,
         generator: torch.Generator | None = None,
 ) -> float:
@@ -322,12 +183,7 @@ def _eval_epoch(
     total, n = 0.0, 0
     for batch in tqdm(loader, desc="    val", leave=False, disable=not _tqdm_ok(verbose)):
         batch = _to_device(batch, device)
-        batch, loss_mask = _apply_random_mask(
-            batch, mask_ratio, device,
-            cylindrical_mask_size=cylindrical_mask_size,
-            cylindrical_mask_prob=cylindrical_mask_prob,
-            generator=generator,
-        )
+        batch, loss_mask = mask_batch(batch, masking, device, donor_pool_mask=donor_pool_mask, generator=generator)
         if not loss_mask.any():
             continue
 
@@ -469,12 +325,11 @@ def fit(
         val_loader: DataLoader,
         max_epochs: int,
         lr: float,
-        mask_ratio: float,
+        masking: list,
         patience: int,
         device: torch.device,
         loss_name: str = "hetero",
-        cylindrical_mask_size: float = 0.0,
-        cylindrical_mask_prob: float = 0.0,
+        donor_pool_mask: Tensor | None = None,
         grad_clip_norm: float = 1.0,
         verbose: bool = True,
         seed: int = 0,
@@ -493,20 +348,18 @@ def fit(
     max_epochs : int
     lr : float
         Adam learning rate.
-    mask_ratio : float
-        Fraction of observed values randomly hidden per training step.
+    masking : list of RandomMask / CylindricalMask / CopyMask / PerFeatureMask
+        Masking strategies applied during training and validation to both the
+        query token and every neighbour scope.
     patience : int
         Early-stopping patience in epochs.
     device : torch.device
     loss_name : str, optional
         ``'hetero'`` for heteroscedastic Gaussian NLL or ``'mse'`` for
         plain masked MSE, by default ``'hetero'``.
-    cylindrical_mask_size : float, default=0.0
-        Radius of the cylindrical block mask in Cartesian coordinate space.
-        Ignored when ``cylindrical_mask_prob=0``.
-    cylindrical_mask_prob : float, default=0.0
-        Per-batch probability of applying the cylindrical block mask during
-        training **and** validation. Set to ``0`` to disable.
+    donor_pool_mask : Tensor, shape (N_pool, F), dtype bool, optional
+        Population to draw copy-mask donors from (the full training set).
+        Required when ``masking`` includes a :class:`mastnet.CopyMask`.
     grad_clip_norm : float, default=1.0
         Maximum gradient norm for :func:`torch.nn.utils.clip_grad_norm_`
         applied before each optimiser step. Set to ``0`` to disable.
@@ -527,17 +380,15 @@ def fit(
     for epoch in tqdm(range(max_epochs), desc="Training", unit="epoch", disable=not _tqdm_ok(verbose)):
         # One training epoch, one validation epoch
         train_loss = _train_epoch(
-            model, train_loader, optimizer, loss_fn, mask_ratio, device,
-            cylindrical_mask_size=cylindrical_mask_size,
-            cylindrical_mask_prob=cylindrical_mask_prob,
+            model, train_loader, optimizer, loss_fn, masking, device,
+            donor_pool_mask=donor_pool_mask,
             grad_clip_norm=grad_clip_norm,
             verbose=verbose,
         )
         val_mask_generator.manual_seed(seed)  # same val masks every epoch
         val_loss = _eval_epoch(
-            model, val_loader, loss_fn, mask_ratio, device,
-            cylindrical_mask_size=cylindrical_mask_size,
-            cylindrical_mask_prob=cylindrical_mask_prob,
+            model, val_loader, loss_fn, masking, device,
+            donor_pool_mask=donor_pool_mask,
             verbose=verbose,
             generator=val_mask_generator,
         )
