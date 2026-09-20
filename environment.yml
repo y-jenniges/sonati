@@ -13,6 +13,7 @@ dependencies:
       - numpy>=1.24
       - scikit-learn>=1.3
       - tqdm
+      - astropy-healpix>=1.0   # equal-area HEALPix block grid (val_method="block", block_grid="healpix")
       - requests      # downloading datasets in examples/
       - pandas>=2.0
       - pytest        # running tests/

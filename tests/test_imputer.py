@@ -164,6 +164,31 @@ def test_val_method_block():
     assert not np.isnan(X_filled).any()
 
 
+def test_val_method_block_healpix():
+    # Equal-area HEALPix block grid must work as alternative to the default degree grid
+    X, coords = _dummy_data()
+    X_filled = MaSTNetImputer(**_FAST, val_method="block", block_grid="healpix").fit_transform(X, coords)
+    assert X_filled.shape == X.shape
+    assert not np.isnan(X_filled).any()
+
+
+def test_val_method_block_healpix_explicit_nside():
+    # healpix_nside overrides the block_size_deg-derived default
+    X, coords = _dummy_data()
+    imputer = MaSTNetImputer(**_FAST, val_method="block", block_grid="healpix", healpix_nside=4)
+    train_idx, val_idx = imputer._make_train_val_split(coords)
+    assert len(train_idx) + len(val_idx) == len(X)
+    assert len(np.intersect1d(train_idx, val_idx)) == 0
+
+
+def test_val_method_block_unknown_grid_raises():
+    # An error is raised when an unknown block_grid method is passed
+    X, coords = _dummy_data()
+    imputer = MaSTNetImputer(**_FAST, val_method="block", block_grid="hexbin")
+    with pytest.raises(ValueError, match="Unknown block_grid"):
+        imputer._make_train_val_split(coords)
+
+
 def test_val_indices():
     # Explicit validation indices take precedence over val_method
     X, coords = _dummy_data()

@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
+from mastnet._geo import healpix_block_ids, nside_for_block_size_deg
 from mastnet._graph import NeighbourDataset, build_graph, precompute_graph
 from mastnet._model import MaSTNeT
 from mastnet._preprocessing import inverse_transform, inverse_transform_std, preprocess
@@ -130,13 +131,28 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         estimate; ``1`` produces a deterministic prediction.
     val_method : str, default='random'
         How to create the internal validation split: ``'random'`` draws a
-        uniform random subset; ``'block'`` assigns points to spatial lat/lon
-        blocks and holds out a contiguous set of blocks, preventing spatial
-        autocorrelation from leaking into the validation signal (recommended
-        for geographic data).
+        uniform random subset; ``'block'`` assigns points to spatial blocks
+        (see ``block_grid``) and holds out a set of whole blocks, preventing
+        spatial autocorrelation from leaking into the validation signal
+        (recommended for geographic data).
+    block_grid : str, default='degree'
+        Grid used to assign spatial blocks when ``val_method='block'``:
+        ``'degree'`` bins ``floor(lat / block_size_deg)`` x
+        ``floor(lon / block_size_deg)``. Simple, but cell area shrinks
+        toward the poles (~``cos(lat)``), so high-latitude area is
+        over-represented relative to its true share of the block lottery.
+        ``'healpix'`` assigns points to HEALPix pixels, which have exactly
+        equal area at any latitude, removing that bias.
     block_size_deg : float, default=15.0
         Width/height of each spatial block in degrees. Only used when
-        ``val_method='block'``.
+        ``val_method='block'``. For ``block_grid='degree'`` this is the
+        literal bin width. For ``block_grid='healpix'`` it is only used to
+        derive ``nside`` (via :func:`mastnet.nside_for_block_size_deg`) if
+        ``healpix_nside`` is not given explicitly.
+    healpix_nside : int or None, default=None
+        HEALPix resolution parameter, only used when ``block_grid='healpix'``.
+        If ``None``, derived from ``block_size_deg`` to match its pixel size.
+        Should be a power of 2.
     val_indices : array-like of int or None, default=None
         Explicit row indices to hold out as the internal validation set for
         early stopping. Takes precedence over ``val_method`` and ``val_frac``
@@ -226,7 +242,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             feature_names=None,
             n_inference: int = 50,
             val_method: str = "random",
+            block_grid: str = "degree",
             block_size_deg: float = 15.0,
+            healpix_nside: int | None = None,
             val_indices=None,
             verbose: bool = True,
             n_jobs: int | None = None,
@@ -259,7 +277,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.feature_names = feature_names
         self.n_inference = n_inference
         self.val_method = val_method
+        self.block_grid = block_grid
         self.block_size_deg = block_size_deg
+        self.healpix_nside = healpix_nside
         self.val_indices = val_indices
         self.verbose = verbose
         self.n_jobs = n_jobs
@@ -276,9 +296,18 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         if self.val_method == "block":
             lat = coords_raw[:, 0]
             lon = coords_raw[:, 1]
-            lat_block = np.floor(lat / self.block_size_deg).astype(int)
-            lon_block = np.floor(lon / self.block_size_deg).astype(int)
-            block_ids = lat_block * 10000 + lon_block
+            if self.block_grid == "degree":
+                lat_block = np.floor(lat / self.block_size_deg).astype(int)
+                lon_block = np.floor(lon / self.block_size_deg).astype(int)
+                block_ids = lat_block * 10000 + lon_block
+            elif self.block_grid == "healpix":
+                nside = (self.healpix_nside if self.healpix_nside is not None
+                         else nside_for_block_size_deg(self.block_size_deg))
+                block_ids = healpix_block_ids(lat, lon, nside)
+            else:
+                raise ValueError(
+                    f"Unknown block_grid={self.block_grid!r}; expected 'degree' or 'healpix'."
+                )
             unique_blocks = np.unique(block_ids)
             rng = np.random.default_rng(self.seed)
             rng.shuffle(unique_blocks)
