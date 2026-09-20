@@ -1,12 +1,11 @@
 """Functional tests for MaSTNetImputer."""
 
 import logging
-
 import numpy as np
 import pytest
 import torch
 
-from mastnet import MaSTNetImputer, precompute_graph
+from mastnet import CopyMask, CylindricalMask, MaSTNetImputer, PerFeatureMask, RandomMask, precompute_graph
 
 
 def _dummy_data(n: int = 300, n_features: int = 3, seed: int = 0):
@@ -187,6 +186,52 @@ def test_fill_strategy_mean():
     assert not np.isnan(X_filled).any()
 
 
+def test_copy_mask_standalone():
+    # Test copy masking
+    X, coords = _dummy_data()
+    X_filled = MaSTNetImputer(**_FAST, masking=[CopyMask(prob=1.0)]).fit_transform(X, coords)
+    assert X_filled.shape == X.shape
+    assert not np.isnan(X_filled).any()
+
+
+def test_copy_mask_combined_with_cylindrical_mask():
+    # Test combined copy and clindtical mask
+    X, coords = _dummy_data()
+    X_filled = MaSTNetImputer(
+        **_FAST, masking=[CopyMask(prob=0.5), CylindricalMask(prob=0.5)]
+    ).fit_transform(X, coords)
+    assert X_filled.shape == X.shape
+    assert not np.isnan(X_filled).any()
+
+
+def test_per_feature_mask_standalone():
+    # Test per-feature (column-wise) masking
+    X, coords = _dummy_data()
+    X_filled = MaSTNetImputer(**_FAST, masking=[PerFeatureMask(ratio=0.5)]).fit_transform(X, coords)
+    assert X_filled.shape == X.shape
+    assert not np.isnan(X_filled).any()
+
+
+def test_masking_none_resolves_to_default_specs(monkeypatch):
+    # masking=None (the default) must resolve to the package's fixed
+    # defaults, and must be stored unmodified on the instance itself
+    from mastnet import imputer as imputer_module
+
+    imputer = MaSTNetImputer(**_FAST)
+    assert imputer.masking is None
+
+    captured = {}
+
+    def fake_fit(model, train_loader, val_loader, **kwargs):
+        captured["masking"] = kwargs["masking"]
+
+    monkeypatch.setattr(imputer_module, "fit", fake_fit)
+
+    X, coords = _dummy_data()
+    imputer.fit(X, coords)
+    assert captured["masking"] == [RandomMask(ratio=0.5), CylindricalMask(radius=0.1, prob=1.0)]
+
+
 def test_sklearn_api():
     # Check sklearn compatibility
     from sklearn.base import clone
@@ -245,7 +290,7 @@ def test_fit_aborts_on_nonfinite_loss(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="mastnet._training"):
         _training.fit(
             model, train_loader=[], val_loader=[],
-            max_epochs=10, lr=1e-3, mask_ratio=0.5, patience=10,
+            max_epochs=10, lr=1e-3, masking=[RandomMask()], patience=10,
             device=torch.device("cpu"), verbose=False,
         )
 
@@ -286,7 +331,7 @@ def test_fit_restores_true_best_not_last_snapshot(monkeypatch):
     model = torch.nn.Linear(1, 1)  # dummy model
     _training.fit(
         model, train_loader=[], val_loader=[],
-        max_epochs=10, lr=1e-3, mask_ratio=0.5, patience=2,
+        max_epochs=10, lr=1e-3, masking=[RandomMask()], patience=2,
         device=torch.device("cpu"), verbose=False,
     )
 
@@ -307,7 +352,7 @@ def test_fit_reseeds_validation_generator_every_epoch(monkeypatch):
         torch.rand(1)  # vary global-RNG consumption, as a real epoch would
         return 0.1
 
-    def fake_eval_epoch(model, loader, loss_fn, mask_ratio, device, **kwargs):
+    def fake_eval_epoch(model, loader, loss_fn, masking, device, **kwargs):
         gen = kwargs.get("generator")
         seen_states.append(gen.get_state().clone() if gen is not None else None)
         return 0.5
@@ -319,7 +364,7 @@ def test_fit_reseeds_validation_generator_every_epoch(monkeypatch):
     model = torch.nn.Linear(1, 1)
     _training.fit(
         model, train_loader=[], val_loader=[],
-        max_epochs=4, lr=1e-3, mask_ratio=0.5, patience=10,
+        max_epochs=4, lr=1e-3, masking=[RandomMask()], patience=10,
         device=torch.device("cpu"), verbose=False, seed=123,
     )
 
@@ -364,13 +409,158 @@ def test_eval_epoch_validation_masks_reproducible_across_epochs():
 
         # Compute loss during evaluation
         losses.append(_training._eval_epoch(
-            model, loader, loss_fn, mask_ratio=0.5, device=device,
-            cylindrical_mask_size=0.5, cylindrical_mask_prob=0.5,
+            model, loader, loss_fn, masking=[RandomMask(), CylindricalMask(radius=0.5, prob=0.5)], device=device,
             verbose=False, generator=val_mask_generator,
         ))
 
     # Ensure all losses are the same, i.e. eval masks were the same
     assert losses[0] == losses[1] == losses[2]
+
+
+def test_copy_mask_strategy():
+    # CopyMask: prob=0 never masks, prob=1 always masks
+    from mastnet._masking import apply_masking_strategies
+
+    device = torch.device("cpu")
+    generator = torch.Generator(device=device).manual_seed(0)
+
+    n_points, n_features = 8, 3
+    # One fully-missing donor row, one fully-observed donor row
+    donor_pool_mask = torch.tensor([[False, False, False], [True, True, True]])
+
+    mask_off = apply_masking_strategies(
+        [CopyMask(prob=0.0)], n_points, n_features,
+        donor_pool_mask=donor_pool_mask, device=device, generator=generator,
+    )
+    assert not mask_off.any()
+
+    mask_on = apply_masking_strategies(
+        [CopyMask(prob=1.0)], n_points, n_features,
+        donor_pool_mask=donor_pool_mask, device=device, generator=generator,
+    )
+    # Every point's mask must come entirely from one donor, i.e. all-hidden or all-observed
+    row_sums = mask_on.sum(dim=1)
+    assert ((row_sums == 0) | (row_sums == n_features)).all()
+    assert row_sums.sum() > 0  # at least one point drew the fully-missing donor
+
+
+def test_copy_mask_requires_donor_pool():
+    # CopyMask: Raises an error when donor pool not specified
+    from mastnet._masking import apply_masking_strategies
+
+    device = torch.device("cpu")
+    with pytest.raises(ValueError, match="donor_pool_mask"):
+        apply_masking_strategies([CopyMask(prob=0.5)], 4, 3, device=device)
+
+
+def test_unknown_masking_strategy_raises():
+    # Unspecified masking strategies raise an error
+    from mastnet._masking import apply_masking_strategies
+
+    with pytest.raises(ValueError, match="Unknown masking strategy"):
+        apply_masking_strategies(["not_a_spec"], 4, 3, device=torch.device("cpu"))
+
+
+def test_masking_strategies_combine(monkeypatch):
+    # Multiple strategies must OR into the same hide-mask
+    from mastnet import _masking
+
+    device = torch.device("cpu")
+    B, n_features = 4, 3
+    batch = {
+        "query_mask": torch.ones(B, n_features, dtype=torch.bool),
+        "query_coords": torch.zeros(B, 4),
+    }
+
+    # Dummy cylinder and copy masks
+    cyl_fake = torch.tensor([[True, False, False]] * B)
+    copy_fake = torch.tensor([[False, True, False]] * B)
+    monkeypatch.setattr(CylindricalMask, "mask", lambda self, *a, **k: cyl_fake)
+    monkeypatch.setattr(CopyMask, "mask", lambda self, *a, **k: copy_fake)
+
+    # Dummy donor pool
+    donor_pool_mask = torch.ones(2, n_features, dtype=torch.bool)
+
+    # Apply masks
+    _, loss_mask = _masking.mask_batch(
+        batch, [CylindricalMask(prob=1.0), CopyMask(prob=1.0)], device,
+        donor_pool_mask=donor_pool_mask,
+    )
+
+    # Both mechanisms' hidden positions must survive into the final loss mask
+    assert (loss_mask & cyl_fake).equal(cyl_fake)
+    assert (loss_mask & copy_fake).equal(copy_fake)
+    # No RandomMask in the list, so nothing beyond these two mechanisms
+    assert loss_mask.equal(cyl_fake | copy_fake)
+
+
+def test_empty_masking_hides_nothing():
+    # An empty masking list must hide nothing of query or neighbours
+    from mastnet._masking import mask_batch
+
+    device = torch.device("cpu")
+    B, K, n_features = 4, 5, 3
+    batch = {
+        "query_mask": torch.ones(B, n_features, dtype=torch.bool),
+        "query_coords": torch.zeros(B, 4),
+        "space": {
+            "mask": torch.ones(B, K, n_features, dtype=torch.bool),
+            "features": torch.zeros(B, K, n_features),
+            "coords": torch.zeros(B, K, 4),
+        },
+    }
+
+    new_batch, loss_mask = mask_batch(batch, [], device)
+
+    assert not loss_mask.any()
+    assert new_batch["query_mask"].all()  # nothing hidden from the model input
+    assert new_batch["space"]["mask"].all()  # neighbour features untouched
+
+
+def test_random_mask_ratio_zero_disables():
+    # RandomMask: Disabled, when prob=0.0
+    from mastnet._masking import apply_masking_strategies
+
+    device = torch.device("cpu")
+    mask = apply_masking_strategies([RandomMask(ratio=0.0)], n_points=10, n_features=4, device=device)
+    assert not mask.any()
+
+
+def test_random_mask_is_row_wise():
+    # RandomMask hides a fraction of features per point (row-wise)
+    from mastnet._masking import apply_masking_strategies
+
+    device = torch.device("cpu")
+    generator = torch.Generator(device=device).manual_seed(0)
+    n_points, n_features = 10, 6
+
+    mask = apply_masking_strategies(
+        [RandomMask(ratio=0.5)], n_points, n_features, device=device, generator=generator,
+    )
+    assert (mask.sum(dim=1) == n_features // 2).all()
+
+
+def test_per_feature_mask_ratio_zero_disables():
+    # PerFeatureMask: Disabled, when prob=0.0
+    from mastnet._masking import apply_masking_strategies
+
+    device = torch.device("cpu")
+    mask = apply_masking_strategies([PerFeatureMask(ratio=0.0)], n_points=10, n_features=4, device=device)
+    assert not mask.any()
+
+
+def test_per_feature_mask_is_column_wise():
+    # PerFeatureMask hides a fraction of points per feature (column-wise)
+    from mastnet._masking import apply_masking_strategies
+
+    device = torch.device("cpu")
+    generator = torch.Generator(device=device).manual_seed(0)
+    n_points, n_features = 20, 4
+
+    mask = apply_masking_strategies(
+        [PerFeatureMask(ratio=0.5)], n_points, n_features, device=device, generator=generator,
+    )
+    assert (mask.sum(dim=0) == n_points // 2).all()
 
 
 def test_precomputed_graph():

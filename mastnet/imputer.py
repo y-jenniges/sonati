@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 logger = logging.getLogger(__name__)
 
 from mastnet._graph import NeighbourDataset, build_graph, precompute_graph
+from mastnet._masking import CylindricalMask, RandomMask, validate_masking
 from mastnet._model import MaSTNeT
 from mastnet._preprocessing import inverse_transform, inverse_transform_std, preprocess
 from mastnet._training import fit, reconstruct, reconstruct_with_uncertainty
@@ -89,18 +90,15 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         Adam learning rate.
     batch_size : int, default=64
         Mini-batch size for training and inference.
-    mask_ratio : float, default=0.5
-        Fraction of observed values randomly hidden during each training step.
-    cylindrical_mask_size : float, default=0.1
-        Radius of the cylindrical block mask in Cartesian (x, y, z) coordinate
-        space. A cylinder is defined as a horizontal disk at this radius -
-        depth is excluded from the distance, so all depths at a geographic
-        location fall inside together.
-    cylindrical_mask_prob : float, default=0.3
-        Per-batch probability of applying the cylindrical block mask during
-        training. This forces the model to reconstruct entire spatial patches
-        rather than individual points and is important for generalisation.
-        Set to ``0`` to disable.
+    masking : list of RandomMask / CylindricalMask / CopyMask / PerFeatureMask or None
+        Masking strategies applied during training and validation ot both query and
+        neighbourhood token, e.g.::
+
+            from mastnet import MaSTNetImputer, RandomMask, CylindricalMask, CopyMask
+            MaSTNetImputer(masking=[RandomMask(ratio=0.5), CopyMask(prob=0.3)])
+
+        Each strategy is independent and additive. Defaults (``None``) to
+        ``[RandomMask(ratio=0.5), CylindricalMask(radius=0.1, prob=1.0)]``.
     grad_clip_norm : float, default=1.0
         Maximum gradient norm; gradients are clipped with
         :func:`torch.nn.utils.clip_grad_norm_` before every optimiser step.
@@ -214,9 +212,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             max_epochs: int = 100,
             lr: float = 1e-3,
             batch_size: int = 64,
-            mask_ratio: float = 0.5,
-            cylindrical_mask_size: float = 0.1,
-            cylindrical_mask_prob: float = 0.3,
+            masking: list | None = None,
             grad_clip_norm: float = 1.0,
             patience: int = 10,
             val_frac: float = 0.2,
@@ -247,9 +243,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.max_epochs = max_epochs
         self.lr = lr
         self.batch_size = batch_size
-        self.mask_ratio = mask_ratio
-        self.cylindrical_mask_size = cylindrical_mask_size
-        self.cylindrical_mask_prob = cylindrical_mask_prob
+        self.masking = masking
         self.grad_clip_norm = grad_clip_norm
         self.patience = patience
         self.val_frac = val_frac
@@ -435,6 +429,16 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         )
         mask_full = ~torch.isnan(values_full)
 
+        # Donor population for CopyMask are all training rows
+        donor_pool_mask = mask_full[train_idx].to(device)
+
+        # Resolve masking strategies and fail on typos
+        masking = self.masking if self.masking is not None else [
+            RandomMask(ratio=0.5),
+            CylindricalMask(radius=0.1, prob=1.0),
+        ]
+        validate_masking(masking)
+
         self.scaler_dict_ = scaler_dict
         self.coords_full_ = coords_full
         self.values_full_ = values_full
@@ -501,10 +505,9 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         fit(
             self.model_, train_loader, val_loader,
             max_epochs=self.max_epochs, lr=self.lr,
-            mask_ratio=self.mask_ratio, patience=self.patience,
+            masking=masking, patience=self.patience,
             device=device, loss_name=self.loss_name,
-            cylindrical_mask_size=self.cylindrical_mask_size,
-            cylindrical_mask_prob=self.cylindrical_mask_prob,
+            donor_pool_mask=donor_pool_mask,
             grad_clip_norm=self.grad_clip_norm,
             verbose=self.verbose,
             seed=self.seed,

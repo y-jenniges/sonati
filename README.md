@@ -1,6 +1,6 @@
 # MaSTNeT — Masked Spatio-Temporal Neighbourhood Transformer
 
-`mastnet` is a Python package for imputing missing values in sparse spatiotemporal data. It implements **MaSTNeT**, a transformer that attends separately to the k-nearest temporal, then spatial, neighbours of each query point and returns both a reconstructed value and a per-point uncertainty estimate.
+`mastnet-imputer` is a Python package for imputing missing values in sparse spatiotemporal data. It implements **MaSTNeT**, a transformer that attends separately to the k-nearest temporal, then spatial, neighbours of each query point and returns both a reconstructed value and a per-point uncertainty estimate.
 
 The model was developed for oceanographic in-situ observations but applies to any point-cloud data with latitude, longitude, depth, and time coordinates.
 
@@ -31,8 +31,8 @@ Requires Python ≥ 3.11 and PyTorch ≥ 2.0.
 import numpy as np
 from mastnet import MaSTNetImputer
 
-# X      — (n_samples, n_features), NaN marks missing values
-# coords — (n_samples, 4) as [latitude (°), longitude (°), depth (m), time]
+# X      - (n_samples, n_features), NaN marks missing values
+# coords - (n_samples, 4) as [latitude (°), longitude (°), depth (m), time]
 imputer = MaSTNetImputer(
     n_neighbours_space=30,
     n_neighbours_time=30,
@@ -90,11 +90,9 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 | `max_epochs` | 100 | Training epoch limit                                                                                                   |
 | `lr` | 1e-3 | Adam learning rate                                                                                                     |
 | `batch_size` | 64 | Mini-batch size                                                                                                        |
-| `mask_ratio` | 0.5 | Fraction of observed values hidden during training                                                                     |
+| `masking` | `None` | Masking strategies applied during training. `None` defaults to `[RandomMask(ratio=0.5), CylindricalMask(radius=0.1, prob=1.0)]` |
 | `val_method` | `'random'` | Internal validation split: `'random'` or `'block'` (geographic)                                                        |
 | `val_indices` | `None` | Explicit validation row indices; overrides `val_method`/`val_frac`                                                     |
-| `cylindrical_mask_size` | 0.1 | Radius of the cylindrical spatial block mask in Cartesian unit-sphere distance; calibrated for global-scale data       |
-| `cylindrical_mask_prob` | 0.3 | Per-batch probability of applying the cylindrical block mask; set to `0` for datasets with a small geographic extent   |
 | `grad_clip_norm` | 1.0 | Maximum gradient norm (clipped before each optimiser step); stabilises heteroscedastic training, set to `0` to disable |
 | `n_jobs` | `None` | Parallel jobs for the spatial k-NN graph build (sklearn convention: `None`=1, `-1`=all cores)                          |
 | `patience` | 10 | Early-stopping patience (epochs)                                                                                       |
@@ -103,6 +101,19 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 | `device` | `'auto'` | `'cpu'`, `'cuda'`, or `'auto'`                                                                                         |
 | `seed` | 42 | Random seed                                                                                                            |
 | `n_inference` | 50 | MC Dropout forward passes used by `predict_with_uncertainty()`                                                         |
+
+## Masking strategies
+
+Available masking strategies for the `masking` argument: 
+
+| Strategy | Hides | 
+|----------|-------|
+| `RandomMask(ratio=0.5)` | A random fraction of features, independently per point (row-wise) |
+| `PerFeatureMask(ratio=0.5)` | A random fraction of points, independently per feature (column-wise) |
+| `CylindricalMask(radius=0.1, prob=1.0)` | Every feature of every point inside a spatial cylinder of radius `radius` |
+| `CopyMask(prob=1.0)` | Apply missingness of a randomly drawn training row, independently per point [1] |
+
+[1] Gorla A, Wang R, Liu Z, An U, Sankararaman S. CACTI: Leveraging Copy Masking and Contextual Information to Improve Tabular Data Imputation. Proc Mach Learn Res. 2025 Jul;267:20187-20225. PMID: 41959945; PMCID: PMC13060770.
 
 ## Precomputed graphs for hyperparameter tuning
 
@@ -123,7 +134,8 @@ for k in (15, 30, 45, 60):
 The `examples/` directory contains runnable end-to-end scripts:
 
 - `real_world_test.py` - air-quality (Open-Meteo API) and traffic (METR-LA) imputation with public data downloaded on run.
-- `jenniges_reproduction.py` - reproduces the sparse, time-resolved ocean imputation from the [companion research project](https://github.com/y-jenniges/time_imputation) on the preprocessed COMFORT dataset (dataset + train/test split hosted on Zenodo). This is a workflow, not a bit-exact, reproduction: an independently trained model agrees with the research pipeline only within predicted uncertainty, which the script quantifies via `agreement_within_uncertainty()`. Pass `--data-path` to run against a local CSV, `--split-path` to use the published split as the exact early-stopping monitor, and `--reference-path` to log agreement against a reference imputation.
+<!-- - `jenniges_reproduction.py` - reproduces the sparse, time-resolved ocean imputation from the [companion research project](https://github.com/y-jenniges/time_imputation) on the preprocessed COMFORT dataset (dataset + train/test split hosted on Zenodo). This is a workflow, not a bit-exact, reproduction: an independently trained model agrees with the research pipeline only within predicted uncertainty, which the script quantifies via `agreement_within_uncertainty()`. Pass `--data-path` to run against a local CSV, `--split-path` to use the published split as the exact early-stopping monitor, and `--reference-path` to log agreement against a reference imputation.
+-->
 
 ## Running the tests
 
