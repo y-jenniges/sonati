@@ -478,7 +478,7 @@ def fit(
         grad_clip_norm: float = 1.0,
         verbose: bool = True,
         seed: int = 0,
-) -> None:
+) -> dict:
     """Train ``model`` in-place with early stopping; restores best weights.
 
     Training aborts as soon as the train or validation loss becomes non-finite
@@ -516,11 +516,18 @@ def fit(
     seed : int, default=0
         Seeds a dedicated generator for validation masking, reset before
         every epoch so the *same* positions are hidden each time.
+
+    Returns
+    -------
+    history : dict
+        ``{"train": {epoch: loss, ...}, "val": {epoch: loss, ...}}`` with one
+        entry per epoch.
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = _build_loss(loss_name)
     stopper = EarlyStopping(patience=patience)
     best_state = deepcopy(model.state_dict())
+    train_history: list[float] = []
     val_history: list[float] = []
     val_mask_generator = torch.Generator(device=device)
 
@@ -558,6 +565,7 @@ def fit(
                         improvement, epoch, median_step,
                     )
             best_state = deepcopy(model.state_dict())
+        train_history.append(train_loss)
         val_history.append(val_loss)
 
         # Log epoch summary
@@ -592,3 +600,4 @@ def fit(
 
     # Restore the best weights
     model.load_state_dict(best_state)
+    return {"train": dict(enumerate(train_history)), "val": dict(enumerate(val_history))}
