@@ -25,11 +25,14 @@ def _dummy_data(n: int = 300, n_features: int = 3, seed: int = 0):
     return X, coords
 
 
-# Minimal hyperparameters for fast tests; verbose=False keeps test output clean
+# Validation indices (take every fifth of n=300 samples)
+_VAL_IDX = np.arange(0, 300, 5)
+
+# Minimal hyperparameters for fast tests, verbose=False keeps test output clean
 _FAST = dict(
     max_epochs=2, n_neighbours_space=10, n_neighbours_time=10,
     patience=2, d_model=16, dim_feedforward=32, n_inference=2,
-    verbose=False,
+    verbose=False, val_indices=_VAL_IDX,
 )
 
 
@@ -156,27 +159,65 @@ def test_cyclic_time():
     assert not np.isnan(X_filled).any()
 
 
-def test_val_method_block():
-    # Check if block validation works
-    X, coords = _dummy_data()
-    X_filled = MaSTNetImputer(**_FAST, val_method="block").fit_transform(X, coords)
-    assert X_filled.shape == X.shape
-    assert not np.isnan(X_filled).any()
+def test_val_indices_required():
+    # Raise error if no validation indices are passed
+    with pytest.raises(TypeError):
+        MaSTNetImputer(**{k: v for k, v in _FAST.items() if k != "val_indices"})
 
 
-def test_val_indices():
-    # Explicit validation indices take precedence over val_method
+def test_val_indices_determine_the_split():
     X, coords = _dummy_data()
-    val_idx = np.arange(0, len(X), 5)
-    imputer = MaSTNetImputer(**_FAST, val_indices=val_idx, val_method="block")
+    imputer = MaSTNetImputer(**_FAST)
 
     train_idx, split_val = imputer._make_train_val_split(coords)
-    assert np.array_equal(np.sort(split_val), np.sort(val_idx))
+    assert np.array_equal(np.sort(split_val), np.sort(_VAL_IDX))
     assert len(np.intersect1d(train_idx, split_val)) == 0
     assert len(train_idx) + len(split_val) == len(X)
 
     X_filled = imputer.fit_transform(X, coords)
+    assert X_filled.shape == X.shape
     assert not np.isnan(X_filled).any()
+    assert np.array_equal(np.sort(imputer.val_idx_), np.sort(_VAL_IDX))
+
+
+def test_test_idx_masks_values_before_fit():
+    # test_idx rows must have every feature set to nan before fit()
+    X, coords = _dummy_data()
+    test_idx = np.arange(1, 300, 7)
+    X[test_idx, 0] = 1.0  # ensure these rows start with a real, non-NaN value
+
+    imputer = MaSTNetImputer(**{**_FAST, "test_idx": test_idx})
+    imputer.fit(X, coords)
+
+    assert torch.isnan(imputer.values_full_[test_idx]).all()
+    # fit() must not mutate the caller's own X in place
+    assert not np.isnan(X[test_idx, 0]).any()
+
+
+def test_test_idx_noop_when_none():
+    # test_idx=None (the default) must not change behaviour
+    X, coords = _dummy_data()
+    imputer = MaSTNetImputer(**_FAST)
+    assert imputer.test_idx is None
+    X_filled = imputer.fit_transform(X, coords)
+    assert not np.isnan(X_filled).any()
+
+
+def test_history_():
+    # Check history_ returned by fit()
+    X, coords = _dummy_data()
+    imputer = MaSTNetImputer(**_FAST)
+    imputer.fit(X, coords)
+
+    assert set(imputer.history_.keys()) == {"train", "val"}
+    n_epochs_train = len(imputer.history_["train"])
+    n_epochs_val = len(imputer.history_["val"])
+    assert n_epochs_train == n_epochs_val
+    assert 0 < n_epochs_train <= _FAST["max_epochs"]
+    # Keyed by epoch, values are finite losses
+    assert set(imputer.history_["train"].keys()) == set(range(n_epochs_train))
+    assert all(np.isfinite(v) for v in imputer.history_["train"].values())
+    assert all(np.isfinite(v) for v in imputer.history_["val"].values())
 
 
 def test_fill_strategy_mean():
@@ -195,7 +236,12 @@ def test_sklearn_api():
     assert "max_epochs" in params
     assert "verbose" in params
     cloned = clone(imputer)
-    assert cloned.get_params() == params
+
+    # Key-by-key comparison
+    cloned_params = cloned.get_params()
+    assert cloned_params.keys() == params.keys()
+    for key, value in params.items():
+        np.testing.assert_array_equal(cloned_params[key], value)
 
 
 def test_not_fitted_error():
@@ -448,6 +494,25 @@ def test_transform_reuses_training_graph(monkeypatch):
 
     with pytest.raises(AssertionError, match="should not be called"):
         imputer.transform(X[:100], coords[:100])  # new coords -> rebuild attempted
+
+
+def test_transform_accepts_precomputed_graph(monkeypatch):
+    # transform(graph=...) must take priority over training-graph and fresh re-build
+    from mastnet import imputer as imputer_module
+
+    X, coords = _dummy_data()
+    imputer = MaSTNetImputer(**_FAST)
+    imputer.fit(X, coords)
+
+    graph = precompute_graph(coords[:100], n_neighbours_space=10, n_neighbours_time=10)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("build_graph should not be called when graph= is given")
+
+    monkeypatch.setattr(imputer_module, "build_graph", _fail)
+    X_filled = imputer.transform(X[:100], coords[:100], graph=graph)  # new coords, but graph given
+    assert X_filled.shape == (100, X.shape[1])
+    assert not np.isnan(X_filled).any()
 
 
 def test_precomputed_graph_validation():

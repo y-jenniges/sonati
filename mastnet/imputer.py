@@ -3,17 +3,20 @@ a sklearn-compatible spatio-temporal imputer.
 """
 
 import logging
+import multiprocessing as mp
 from time import time
 from typing import Dict
 import numpy as np
 import torch
 from torch import Tensor
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_is_fitted
 from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
+
+# forkserver not available on Windows -> fall back to slower spawn method
+_FIT_MP_CONTEXT = "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
 
 from mastnet._graph import NeighbourDataset, build_graph, precompute_graph
 from mastnet._model import MaSTNeT
@@ -108,8 +111,6 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         NaN. Set to ``0`` to disable.
     patience : int, default=10
         Early-stopping patience (epochs without validation improvement).
-    val_frac : float, default=0.2
-        Fraction of rows held out for internal validation.
     cyclic_time : bool, default=False
         Encode time cyclically with sine/cosine. Useful for monthly data
         (pass month 1–12 as the time column); use False for yearly data.
@@ -128,20 +129,12 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         :meth:`predict_with_uncertainty` to estimate epistemic uncertainty
         via MC Dropout. Must be ``> 1`` to get a meaningful epistemic
         estimate; ``1`` produces a deterministic prediction.
-    val_method : str, default='random'
-        How to create the internal validation split: ``'random'`` draws a
-        uniform random subset; ``'block'`` assigns points to spatial lat/lon
-        blocks and holds out a contiguous set of blocks, preventing spatial
-        autocorrelation from leaking into the validation signal (recommended
-        for geographic data).
-    block_size_deg : float, default=15.0
-        Width/height of each spatial block in degrees. Only used when
-        ``val_method='block'``.
-    val_indices : array-like of int or None, default=None
-        Explicit row indices to hold out as the internal validation set for
-        early stopping. Takes precedence over ``val_method`` and ``val_frac``
-        when provided. Useful to reproduce an external experiment's fixed
-        train/validation split exactly.
+    val_indices : array-like of int
+        Row indices to hold out as the internal validation set for early
+        stopping. Required.
+    test_idx : array-like of int or None, default=None
+        Row indices to withhold entirely from training. Coordinates for these
+        rows are still used to build the k-NN graph.
     verbose : bool, default=True
         Show progress bars and per-epoch log lines during training and
         inference. Set to ``False`` to silence all console output (e.g.
@@ -180,6 +173,12 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         Resolved feature names set during :meth:`fit`. Always a plain list
         of strings regardless of how ``feature_names`` was provided.
     n_features_in_ : int
+    history_ : dict
+        ``{"train": {epoch: loss, ...}, "val": {epoch: loss, ...}}`` from the
+        most recent :meth:`fit` call with one entry per epoch.
+    val_idx_ : ndarray of int
+        Row indices held out as the internal validation set for early
+        stopping. Callers can score their own metric with this.
 
     Examples
     --------
@@ -201,6 +200,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
     def __init__(
             self,
+            val_indices,
+            test_idx=None,
             n_neighbours_space: int = 30,
             n_neighbours_time: int = 30,
             d_model: int = 64,
@@ -219,15 +220,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             cylindrical_mask_prob: float = 0.3,
             grad_clip_norm: float = 1.0,
             patience: int = 10,
-            val_frac: float = 0.2,
             cyclic_time: bool = False,
             device: str = "auto",
             seed: int = 42,
             feature_names=None,
             n_inference: int = 50,
-            val_method: str = "random",
-            block_size_deg: float = 15.0,
-            val_indices=None,
             verbose: bool = True,
             n_jobs: int | None = None,
             num_workers: int = 0,
@@ -252,15 +249,13 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.cylindrical_mask_prob = cylindrical_mask_prob
         self.grad_clip_norm = grad_clip_norm
         self.patience = patience
-        self.val_frac = val_frac
         self.cyclic_time = cyclic_time
         self.device = device
         self.seed = seed
         self.feature_names = feature_names
         self.n_inference = n_inference
-        self.val_method = val_method
-        self.block_size_deg = block_size_deg
         self.val_indices = val_indices
+        self.test_idx = test_idx
         self.verbose = verbose
         self.n_jobs = n_jobs
         self.num_workers = num_workers
@@ -268,26 +263,11 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.inference_num_workers = inference_num_workers
 
     def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return (train_idx, val_idx) from ``val_indices`` if given, else according to ``val_method``."""
-        idx = np.arange(len(coords_raw))
-        if self.val_indices is not None:
-            val_idx = np.asarray(self.val_indices, dtype=int)
-            return np.setdiff1d(idx, val_idx), val_idx
-        if self.val_method == "block":
-            lat = coords_raw[:, 0]
-            lon = coords_raw[:, 1]
-            lat_block = np.floor(lat / self.block_size_deg).astype(int)
-            lon_block = np.floor(lon / self.block_size_deg).astype(int)
-            block_ids = lat_block * 10000 + lon_block
-            unique_blocks = np.unique(block_ids)
-            rng = np.random.default_rng(self.seed)
-            rng.shuffle(unique_blocks)
-            n_val = max(1, int(len(unique_blocks) * self.val_frac))
-            val_set = set(unique_blocks[:n_val].tolist())
-            in_val = np.array([b in val_set for b in block_ids])
-            return idx[~in_val], idx[in_val]
-        else:
-            return train_test_split(idx, test_size=self.val_frac, random_state=self.seed)
+        """Return (train_idx, val_idx) from ``val_indices``."""
+        idx = np.arange(len(coords_raw))  # all passed coordinates
+        val_idx = np.asarray(self.val_indices, dtype=int)
+        # Training data is all passed data without the validation indices
+        return np.setdiff1d(idx, val_idx), val_idx
 
     def _resolve_device(self) -> torch.device:
         if self.device == "auto":
@@ -325,13 +305,17 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             sliced[scope] = idx[:, :k]
         return sliced
 
-    def _inference_graph(self, coords_scaled: torch.Tensor) -> dict:
+    def _inference_graph(self, coords_scaled: torch.Tensor, graph: dict | None = None) -> dict:
         """
         Return the k-NN graph for inference coordinates.
 
-        Reuses the graph built during :meth:`fit` if ``coords_scaled`` is
-        identical to the training coordinates for efficiency.
+        Uses ``graph`` if given, else if `coords_scaled`` is identical to the
+        training coordinates, re-uses graph built during :meth:`fit`, else
+        builds a fresh graph.
         """
+        if graph is not None:
+            return self._slice_graph(graph, len(coords_scaled))
+
         # Skip graph building
         if torch.equal(coords_scaled, self.coords_full_):
             logger.info("Coordinates match the training data; reusing the k-NN graph from fit().")
@@ -414,11 +398,17 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X = np.asarray(X, dtype=float)
         coords = np.asarray(coords, dtype=float)
 
+        # Set test indices to nan
+        if self.test_idx is not None and len(self.test_idx) > 0:
+            X = X.copy()
+            X[self.test_idx] = np.nan
+
         device = self._resolve_device()
         generator = _set_seed(self.seed)
 
         # Train / validation split
         train_idx, val_idx = self._make_train_val_split(coords)
+        self.val_idx_ = val_idx  # expose val_idx_ so callers can score their own metric
 
         # Preprocess: fit scalers on training rows, transform full dataset
         coords_t = torch.as_tensor(coords, dtype=torch.float32)
@@ -466,22 +456,21 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             logger.info("Graph built in %.1fs.", time() - t0)
         self.graph_ = graph
 
-        # Loaders (train/val hide validation values from neighbourhoods)
-        # Forkserver avoids deadlocks from graph building leftovers
+        # Loaders (train/val hide values from neighbourhoods)
         train_loader = self._make_loader(coords_full, values_full, graph,
                                          indices=train_idx, shuffle=True,
                                          generator=generator,
                                          neighbour_values=neighbour_values,
                                          num_workers=self.num_workers,
-                                         multiprocessing_context="forkserver")
+                                         multiprocessing_context=_FIT_MP_CONTEXT)
         val_loader = self._make_loader(coords_full, values_full, graph,
                                        indices=val_idx,
                                        neighbour_values=neighbour_values,
                                        num_workers=self.num_workers,
-                                       multiprocessing_context="forkserver")
+                                       multiprocessing_context=_FIT_MP_CONTEXT)
         self.full_loader_ = self._make_loader(coords_full, values_full, graph,
                                               num_workers=self.num_workers,
-                                              multiprocessing_context="forkserver")
+                                              multiprocessing_context=_FIT_MP_CONTEXT)
 
         # Model
         coord_dim = coords_full.shape[1]
@@ -498,7 +487,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             global_means=global_means if self.fill_strategy == "mean" else None,
         ).to(device)
 
-        fit(
+        self.history_ = fit(
             self.model_, train_loader, val_loader,
             max_epochs=self.max_epochs, lr=self.lr,
             mask_ratio=self.mask_ratio, patience=self.patience,
@@ -514,7 +503,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         self.n_features_in_ = X.shape[1]
         return self
 
-    def transform(self, X, coords):
+    def transform(self, X, coords, graph=None):
         """
         Impute missing values using the fitted model.
 
@@ -522,6 +511,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         ----------
         X : array-like of shape (n_samples, n_features)
         coords : array-like of shape (n_samples, 4)
+        graph : dict or None, default=None
+            Precomputed k-NN graph for these coordinates.
 
         Returns
         -------
@@ -542,7 +533,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         )
 
         # Neighbourhood graphs (reused from fit() when coords are the training coords)
-        graph = self._inference_graph(coords_scaled)
+        graph = self._inference_graph(coords_scaled, graph=graph)
         loader = self._inference_loader(coords_scaled, values_scaled, graph)
 
         # Predict and unscale
@@ -586,7 +577,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         X_out[np.isnan(X_out)] = preds_np[np.isnan(X_out)]
         return X_out
 
-    def predict_with_uncertainty(self, X, coords, return_realisations: bool = False):
+    def predict_with_uncertainty(self, X, coords, return_realisations: bool = False, graph=None):
         """
         Impute missing values and return per-point uncertainty estimates.
 
@@ -607,6 +598,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
             units) instead of only their aggregate mean/std, e.g. for
             downstream methods that need the distribution across draws rather
             than its first two moments.
+        graph : dict or None, default=None
+            Precomputed k-NN graph for these coordinates.
 
         Returns
         -------
@@ -634,7 +627,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         )
 
         # Neighbourhood graphs (reused from fit() when coords are the training coords)
-        graph = self._inference_graph(coords_scaled)
+        graph = self._inference_graph(coords_scaled, graph=graph)
         loader = self._inference_loader(coords_scaled, values_scaled, graph)
 
         # Predict mean, epistemic and aleatoric uncertainties
