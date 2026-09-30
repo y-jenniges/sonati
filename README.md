@@ -1,4 +1,4 @@
-# MaSTNeT — Masked Spatio-Temporal Neighbourhood Transformer
+# MaSTNeT - Masked Spatio-Temporal Neighbourhood Transformer
 
 `mastnet-imputer` is a Python package for imputing missing values in sparse spatiotemporal data. It implements **MaSTNeT**, a transformer that attends separately to the k-nearest temporal, then spatial, neighbours of each query point and returns both a reconstructed value and a per-point uncertainty estimate.
 
@@ -149,11 +149,11 @@ pytest tests/
 If you use this package, please cite:
 
 ```bibtex
-@article{TODO,
-  title   = {TODO},
-  author  = {TODO},
-  journal = {TODO},
-  year    = {TODO},
+@article{jenniges_inprep,
+  title   = {{MaSTNeT}: Masked spatio-temporal neighbourhood transformer for imputation of sparse, tabular, spatio-temporal data with uncertainty},
+  author  = {Yvonne Jenniges and Boris Peter Koch and Sebastian Maneth},
+  journal = {Environmental Data Science},
+  year    = {in prep.},
 }
 ```
 
