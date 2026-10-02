@@ -1,11 +1,11 @@
-"""Functional tests for MaSTNetImputer."""
+"""Functional tests for SONATIImputer."""
 
 import logging
 import numpy as np
 import pytest
 import torch
 
-from mastnet import CopyMask, CylindricalMask, MaSTNetImputer, PerFeatureMask, RandomMask, precompute_graph
+from sonati import CopyMask, CylindricalMask, SONATIImputer, PerFeatureMask, RandomMask, precompute_graph
 
 
 def _dummy_data(n: int = 300, n_features: int = 3, seed: int = 0):
@@ -37,15 +37,15 @@ _FAST = dict(
 
 def test_import():
     # Check import
-    import mastnet
-    assert hasattr(mastnet, "__version__")
-    assert mastnet.MaSTNetImputer is MaSTNetImputer
+    import sonati
+    assert hasattr(sonati, "__version__")
+    assert sonati.SONATIImputer is SONATIImputer
 
 
 def test_fit_transform():
     # Check fit_transform and output shapes and if nans were imputed
     X, coords = _dummy_data()
-    X_filled = MaSTNetImputer(**_FAST).fit_transform(X, coords)
+    X_filled = SONATIImputer(**_FAST).fit_transform(X, coords)
     assert X_filled.shape == X.shape
     assert not np.isnan(X_filled).any()
 
@@ -53,7 +53,7 @@ def test_fit_transform():
 def test_fit_then_transform():
     # Check fit, then transform
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     imputer.fit(X, coords)
     X_filled = imputer.transform(X, coords)
     assert X_filled.shape == X.shape
@@ -63,7 +63,7 @@ def test_fit_then_transform():
 def test_observed_values_unchanged():
     # Check if observed values remain unchanged
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     X_filled = imputer.fit_transform(X, coords)
     observed = ~np.isnan(X)
     np.testing.assert_array_equal(X_filled[observed], X[observed])
@@ -72,7 +72,7 @@ def test_observed_values_unchanged():
 def test_predict_with_uncertainty():
     # Check if prediction with and without uncertainty work as intended
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     imputer.fit(X, coords)
     X_filled, aleatoric_std, epistemic_std = imputer.predict_with_uncertainty(X, coords)
     assert X_filled.shape == X.shape
@@ -81,7 +81,7 @@ def test_predict_with_uncertainty():
     assert not np.isnan(X_filled).any()
 
     # With n_inference=1, epistemic std must be zero (single deterministic pass)
-    imputer_det = MaSTNetImputer(**{**_FAST, "n_inference": 1})
+    imputer_det = SONATIImputer(**{**_FAST, "n_inference": 1})
     imputer_det.fit(X, coords)
     _, _, epistemic_det = imputer_det.predict_with_uncertainty(X, coords)
     assert (epistemic_det == 0).all()
@@ -91,7 +91,7 @@ def test_predict_with_uncertainty_realisations():
     # return_realisations=True must expose the individual MC-dropout draws,
     # in physical units, whose mean matches the aggregate X_filled prediction
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     imputer.fit(X, coords)
     X_filled, aleatoric_std, epistemic_std, realisations = imputer.predict_with_uncertainty(
         X, coords, return_realisations=True
@@ -114,13 +114,13 @@ def test_predict_with_uncertainty_physical_units(monkeypatch):
     # feature's data_range_), not MinMax-scaled [0, 1] units. As MC-dropout is
     # stochastic, the scaled output is intercepted via monkeypatch
     # rather than recomputed in a second, random call.
-    from mastnet import imputer as imputer_module
+    from sonati import imputer as imputer_module
 
     # Set up dummy data
     X, coords = _dummy_data()
 
     # Fit imputer
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     imputer.fit(X, coords)
 
     # Intercept the single stochastic reconstruction call to capture its
@@ -154,19 +154,19 @@ def test_cyclic_time():
         rng.uniform(0, 500, n),
         rng.integers(1, 13, n).astype(float),  # months 1-12
     ])
-    X_filled = MaSTNetImputer(**_FAST, cyclic_time=True).fit_transform(X, coords)
+    X_filled = SONATIImputer(**_FAST, cyclic_time=True).fit_transform(X, coords)
     assert not np.isnan(X_filled).any()
 
 
 def test_val_indices_required():
     # Raise error if no validation indices are passed
     with pytest.raises(TypeError):
-        MaSTNetImputer(**{k: v for k, v in _FAST.items() if k != "val_indices"})
+        SONATIImputer(**{k: v for k, v in _FAST.items() if k != "val_indices"})
 
 
 def test_val_indices_determine_the_split():
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
 
     train_idx, split_val = imputer._make_train_val_split(coords)
     assert np.array_equal(np.sort(split_val), np.sort(_VAL_IDX))
@@ -185,7 +185,7 @@ def test_test_idx_masks_values_before_fit():
     test_idx = np.arange(1, 300, 7)
     X[test_idx, 0] = 1.0  # ensure these rows start with a real, non-NaN value
 
-    imputer = MaSTNetImputer(**{**_FAST, "test_idx": test_idx})
+    imputer = SONATIImputer(**{**_FAST, "test_idx": test_idx})
     imputer.fit(X, coords)
 
     assert torch.isnan(imputer.values_full_[test_idx]).all()
@@ -196,7 +196,7 @@ def test_test_idx_masks_values_before_fit():
 def test_test_idx_noop_when_none():
     # test_idx=None (the default) must not change behaviour
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     assert imputer.test_idx is None
     X_filled = imputer.fit_transform(X, coords)
     assert not np.isnan(X_filled).any()
@@ -205,7 +205,7 @@ def test_test_idx_noop_when_none():
 def test_history_():
     # Check history_ returned by fit()
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     imputer.fit(X, coords)
 
     assert set(imputer.history_.keys()) == {"train", "val"}
@@ -222,7 +222,7 @@ def test_history_():
 def test_fill_strategy_mean():
     # Test mean filling
     X, coords = _dummy_data()
-    X_filled = MaSTNetImputer(**_FAST, fill_strategy="mean").fit_transform(X, coords)
+    X_filled = SONATIImputer(**_FAST, fill_strategy="mean").fit_transform(X, coords)
     assert X_filled.shape == X.shape
     assert not np.isnan(X_filled).any()
 
@@ -230,7 +230,7 @@ def test_fill_strategy_mean():
 def test_copy_mask_standalone():
     # Test copy masking
     X, coords = _dummy_data()
-    X_filled = MaSTNetImputer(**_FAST, masking=[CopyMask(prob=1.0)]).fit_transform(X, coords)
+    X_filled = SONATIImputer(**_FAST, masking=[CopyMask(prob=1.0)]).fit_transform(X, coords)
     assert X_filled.shape == X.shape
     assert not np.isnan(X_filled).any()
 
@@ -238,7 +238,7 @@ def test_copy_mask_standalone():
 def test_copy_mask_combined_with_cylindrical_mask():
     # Test combined copy and clindtical mask
     X, coords = _dummy_data()
-    X_filled = MaSTNetImputer(
+    X_filled = SONATIImputer(
         **_FAST, masking=[CopyMask(prob=0.5), CylindricalMask(prob=0.5)]
     ).fit_transform(X, coords)
     assert X_filled.shape == X.shape
@@ -248,7 +248,7 @@ def test_copy_mask_combined_with_cylindrical_mask():
 def test_per_feature_mask_standalone():
     # Test per-feature (column-wise) masking
     X, coords = _dummy_data()
-    X_filled = MaSTNetImputer(**_FAST, masking=[PerFeatureMask(ratio=0.5)]).fit_transform(X, coords)
+    X_filled = SONATIImputer(**_FAST, masking=[PerFeatureMask(ratio=0.5)]).fit_transform(X, coords)
     assert X_filled.shape == X.shape
     assert not np.isnan(X_filled).any()
 
@@ -256,9 +256,9 @@ def test_per_feature_mask_standalone():
 def test_masking_none_resolves_to_default_specs(monkeypatch):
     # masking=None (the default) must resolve to the package's fixed
     # defaults, and must be stored unmodified on the instance itself
-    from mastnet import imputer as imputer_module
+    from sonati import imputer as imputer_module
 
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     assert imputer.masking is None
 
     captured = {}
@@ -276,7 +276,7 @@ def test_masking_none_resolves_to_default_specs(monkeypatch):
 def test_sklearn_api():
     # Check sklearn compatibility
     from sklearn.base import clone
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     params = imputer.get_params()
     assert "max_epochs" in params
     assert "verbose" in params
@@ -292,7 +292,7 @@ def test_sklearn_api():
 def test_not_fitted_error():
     # Check compatibility with NotFittedError
     from sklearn.exceptions import NotFittedError
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     X, coords = _dummy_data()
     with pytest.raises(NotFittedError):
         imputer.transform(X, coords)
@@ -300,8 +300,8 @@ def test_not_fitted_error():
 
 def test_logvar_clamped():
     # An extreme logvar head must be clamped so exp(logvar) cannot overflow
-    from mastnet._model import LOGVAR_CLAMP, MaSTNeT
-    model = MaSTNeT(n_features=2, coord_dim=5, d_model=16, dim_feedforward=32)
+    from sonati._model import LOGVAR_CLAMP, SONATI
+    model = SONATI(n_features=2, coord_dim=5, d_model=16, dim_feedforward=32)
     with torch.no_grad():
         model.logvar_head.bias.fill_(1e4)
 
@@ -327,13 +327,13 @@ def test_logvar_clamped():
 
 def test_fit_aborts_on_nonfinite_loss(monkeypatch, caplog):
     # A non-finite epoch loss must abort training instead of burning patience
-    from mastnet import _training
+    from sonati import _training
 
     monkeypatch.setattr(_training, "_train_epoch", lambda *a, **k: float("nan"))
     monkeypatch.setattr(_training, "_eval_epoch", lambda *a, **k: float("nan"))
 
     model = torch.nn.Linear(1, 1)
-    with caplog.at_level(logging.INFO, logger="mastnet._training"):
+    with caplog.at_level(logging.INFO, logger="sonati._training"):
         _training.fit(
             model, train_loader=[], val_loader=[],
             max_epochs=10, lr=1e-3, masking=[RandomMask()], patience=10,
@@ -352,7 +352,7 @@ def test_fit_restores_true_best_not_last_snapshot(monkeypatch):
     # run of epochs that each nudge below the stale best_loss without ever
     # clearing the delta could overwrite an earlier, better
     # snapshot with a later, worse one.
-    from mastnet import _training
+    from sonati import _training
 
     # Example setup: Epoch 0 (val=1.0) is the only real best (clears the delta
     # against the initial np.inf). Epochs 1 and 2 both beat the stale best_loss=1.0
@@ -389,7 +389,7 @@ def test_fit_restores_true_best_not_last_snapshot(monkeypatch):
 def test_fit_reseeds_validation_generator_every_epoch(monkeypatch):
     # fit() must reset the validation mask generator to the same
     # state before every epoch's _eval_epoch call
-    from mastnet import _training
+    from sonati import _training
 
     seen_states = []
 
@@ -423,7 +423,7 @@ def test_fit_reseeds_validation_generator_every_epoch(monkeypatch):
 def test_eval_epoch_validation_masks_reproducible_across_epochs():
     # With a generator (reseeded to the same value), _eval_epoch must
     # draw identical masks and thus losses
-    from mastnet import _training
+    from sonati import _training
 
     device = torch.device("cpu")
 
@@ -465,7 +465,7 @@ def test_eval_epoch_validation_masks_reproducible_across_epochs():
 
 def test_copy_mask_strategy():
     # CopyMask: prob=0 never masks, prob=1 always masks
-    from mastnet._masking import apply_masking_strategies
+    from sonati._masking import apply_masking_strategies
 
     device = torch.device("cpu")
     generator = torch.Generator(device=device).manual_seed(0)
@@ -492,7 +492,7 @@ def test_copy_mask_strategy():
 
 def test_copy_mask_requires_donor_pool():
     # CopyMask: Raises an error when donor pool not specified
-    from mastnet._masking import apply_masking_strategies
+    from sonati._masking import apply_masking_strategies
 
     device = torch.device("cpu")
     with pytest.raises(ValueError, match="donor_pool_mask"):
@@ -501,7 +501,7 @@ def test_copy_mask_requires_donor_pool():
 
 def test_unknown_masking_strategy_raises():
     # Unspecified masking strategies raise an error
-    from mastnet._masking import apply_masking_strategies
+    from sonati._masking import apply_masking_strategies
 
     with pytest.raises(ValueError, match="Unknown masking strategy"):
         apply_masking_strategies(["not_a_spec"], 4, 3, device=torch.device("cpu"))
@@ -509,7 +509,7 @@ def test_unknown_masking_strategy_raises():
 
 def test_masking_strategies_combine(monkeypatch):
     # Multiple strategies must OR into the same hide-mask
-    from mastnet import _masking
+    from sonati import _masking
 
     device = torch.device("cpu")
     B, n_features = 4, 3
@@ -542,7 +542,7 @@ def test_masking_strategies_combine(monkeypatch):
 
 def test_empty_masking_hides_nothing():
     # An empty masking list must hide nothing of query or neighbours
-    from mastnet._masking import mask_batch
+    from sonati._masking import mask_batch
 
     device = torch.device("cpu")
     B, K, n_features = 4, 5, 3
@@ -565,7 +565,7 @@ def test_empty_masking_hides_nothing():
 
 def test_random_mask_ratio_zero_disables():
     # RandomMask: Disabled, when prob=0.0
-    from mastnet._masking import apply_masking_strategies
+    from sonati._masking import apply_masking_strategies
 
     device = torch.device("cpu")
     mask = apply_masking_strategies([RandomMask(ratio=0.0)], n_points=10, n_features=4, device=device)
@@ -574,7 +574,7 @@ def test_random_mask_ratio_zero_disables():
 
 def test_random_mask_is_row_wise():
     # RandomMask hides a fraction of features per point (row-wise)
-    from mastnet._masking import apply_masking_strategies
+    from sonati._masking import apply_masking_strategies
 
     device = torch.device("cpu")
     generator = torch.Generator(device=device).manual_seed(0)
@@ -588,7 +588,7 @@ def test_random_mask_is_row_wise():
 
 def test_per_feature_mask_ratio_zero_disables():
     # PerFeatureMask: Disabled, when prob=0.0
-    from mastnet._masking import apply_masking_strategies
+    from sonati._masking import apply_masking_strategies
 
     device = torch.device("cpu")
     mask = apply_masking_strategies([PerFeatureMask(ratio=0.0)], n_points=10, n_features=4, device=device)
@@ -597,7 +597,7 @@ def test_per_feature_mask_ratio_zero_disables():
 
 def test_per_feature_mask_is_column_wise():
     # PerFeatureMask hides a fraction of points per feature (column-wise)
-    from mastnet._masking import apply_masking_strategies
+    from sonati._masking import apply_masking_strategies
 
     device = torch.device("cpu")
     generator = torch.Generator(device=device).manual_seed(0)
@@ -615,7 +615,7 @@ def test_precomputed_graph():
     graph = precompute_graph(coords, n_neighbours_space=15, n_neighbours_time=15)
     assert graph["space"].shape == (len(X), 15)
 
-    imputer = MaSTNetImputer(**_FAST)  # n_neighbours=10 < 15
+    imputer = SONATIImputer(**_FAST)  # n_neighbours=10 < 15
     X_filled = imputer.fit_transform(X, coords, graph=graph)
     assert X_filled.shape == X.shape
     assert not np.isnan(X_filled).any()
@@ -628,7 +628,7 @@ def test_precomputed_graph():
 def test_knn_indices_nearest_neighbour_in_column_zero():
     # Column 0 of _knn_indices must be each point's true nearest neighbour,
     # not its second-nearest (regression test for the off-by-one self-drop)
-    from mastnet._graph import _knn_indices
+    from sonati._graph import _knn_indices
 
     rng = np.random.default_rng(0)
     coords = rng.uniform(-10, 10, size=(50, 3))
@@ -646,7 +646,7 @@ def test_knn_indices_nearest_neighbour_in_column_zero():
 def test_neighbour_values_hidden():
     # Values NaN-ed in neighbour_values must be invisible as neighbour features
     # while the same rows remain fully usable as queries (targets/inputs)
-    from mastnet._graph import NeighbourDataset
+    from sonati._graph import NeighbourDataset
 
     coords = torch.rand(4, 5)
     values = torch.arange(8, dtype=torch.float32).reshape(4, 2)
@@ -669,10 +669,10 @@ def test_neighbour_values_hidden():
 
 def test_transform_reuses_training_graph(monkeypatch):
     # transform on the training data must reuse self.graph_ instead of rebuilding
-    from mastnet import imputer as imputer_module
+    from sonati import imputer as imputer_module
 
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     imputer.fit(X, coords)
 
     def _fail(*args, **kwargs):
@@ -688,10 +688,10 @@ def test_transform_reuses_training_graph(monkeypatch):
 
 def test_transform_accepts_precomputed_graph(monkeypatch):
     # transform(graph=...) must take priority over training-graph and fresh re-build
-    from mastnet import imputer as imputer_module
+    from sonati import imputer as imputer_module
 
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
     imputer.fit(X, coords)
 
     graph = precompute_graph(coords[:100], n_neighbours_space=10, n_neighbours_time=10)
@@ -708,7 +708,7 @@ def test_transform_accepts_precomputed_graph(monkeypatch):
 def test_precomputed_graph_validation():
     # Invalid precomputed graphs must raise informative errors
     X, coords = _dummy_data()
-    imputer = MaSTNetImputer(**_FAST)
+    imputer = SONATIImputer(**_FAST)
 
     with pytest.raises(ValueError, match="missing the 'time' key"):
         imputer.fit(X, coords, graph={"space": torch.zeros(len(X), 15, dtype=torch.long)})
@@ -740,7 +740,7 @@ def _brute_force_1d(values: np.ndarray, k: int, period: float | None = None) -> 
 
 def test_sorted_knn_1d_matches_brute_force_linear():
     # Tests if 1d nearest neighbours matches brute force computations
-    from mastnet._graph import _sorted_knn_1d
+    from sonati._graph import _sorted_knn_1d
 
     # Generate some data
     rng = np.random.default_rng(0)
@@ -762,7 +762,7 @@ def test_sorted_knn_1d_matches_brute_force_linear():
 def test_sorted_knn_1d_matches_brute_force_with_heavy_duplicates():
     # Tests if 1d nearest neighbours matches brute force computations
     # when many duplicates are present
-    from mastnet._graph import _sorted_knn_1d
+    from sonati._graph import _sorted_knn_1d
 
     # Set up data
     rng = np.random.default_rng(1)
@@ -782,7 +782,7 @@ def test_sorted_knn_1d_matches_brute_force_with_heavy_duplicates():
 
 def test_sorted_knn_1d_wraps_around_period():
     # Test circular time (does wrap edge cases around work?)
-    from mastnet._graph import _sorted_knn_1d
+    from sonati._graph import _sorted_knn_1d
 
     # Set up data
     period = 2 * np.pi
@@ -807,7 +807,7 @@ def test_sorted_knn_1d_wraps_around_period():
 
 def test_time_knn_indices_cyclic_matches_linear_recovery():
     # Test circular time (is angle decoding working correctly?)
-    from mastnet._graph import _time_knn_indices, _sorted_knn_1d
+    from sonati._graph import _time_knn_indices, _sorted_knn_1d
 
     # Set up data
     rng = np.random.default_rng(2)

@@ -1,4 +1,4 @@
-"""MaSTNetImputer - Masked Spatio-Temporal Neighbourhood Transformer,
+"""SONATIImputer - Spatio-temporal Ocean Neighbourhood Asymmetric Transformer for Imputation,
 a sklearn-compatible spatio-temporal imputer.
 """
 
@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 # forkserver not available on Windows -> fall back to slower spawn method
 _FIT_MP_CONTEXT = "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
 
-from mastnet._graph import NeighbourDataset, build_graph, precompute_graph
-from mastnet._masking import CylindricalMask, RandomMask, validate_masking
-from mastnet._model import MaSTNeT
-from mastnet._preprocessing import inverse_transform, inverse_transform_std, preprocess
-from mastnet._training import fit, reconstruct, reconstruct_with_uncertainty
+from sonati._graph import NeighbourDataset, build_graph, precompute_graph
+from sonati._masking import CylindricalMask, RandomMask, validate_masking
+from sonati._model import SONATI
+from sonati._preprocessing import inverse_transform, inverse_transform_std, preprocess
+from sonati._training import fit, reconstruct, reconstruct_with_uncertainty
 
 
 def _set_seed(seed: int) -> torch.Generator:
@@ -45,9 +45,9 @@ def _nan_aware_equal(a: Tensor, b: Tensor) -> bool:
     ))
 
 
-class MaSTNetImputer(BaseEstimator, TransformerMixin):
+class SONATIImputer(BaseEstimator, TransformerMixin):
     """
-    MaSTNeT (Masked Spatio-temporal Neighbourhood Transformer)
+    SONATI (Spatio-temporal Ocean Neighbourhood Asymmetric Transformer for Imputation)
     reconstructs missing values by attending to k-nearest temporal and
     j-nearest spatial neighbours (in that order) in a factorised cross-attention
     architecture. Missingness enters the model only through a feature mixer
@@ -97,8 +97,8 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         Masking strategies applied during training and validation ot both query and
         neighbourhood token, e.g.::
 
-            from mastnet import MaSTNetImputer, RandomMask, CylindricalMask, CopyMask
-            MaSTNetImputer(masking=[RandomMask(ratio=0.5), CopyMask(prob=0.3)])
+            from sonati import SONATIImputer, RandomMask, CylindricalMask, CopyMask
+            SONATIImputer(masking=[RandomMask(ratio=0.5), CopyMask(prob=0.3)])
 
         Each strategy is independent and additive. Defaults (``None``) to
         ``[RandomMask(ratio=0.5), CylindricalMask(radius=0.1, prob=1.0)]``.
@@ -163,7 +163,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
     Attributes
     ----------
-    model_ : MaSTNeT
+    model_ : SONATI
         Trained PyTorch model.
     scaler_dict_ : dict
         Fitted coordinate and feature scalers.
@@ -181,7 +181,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     Examples
     --------
     >>> import numpy as np
-    >>> from mastnet import MaSTNetImputer
+    >>> from sonati import SONATIImputer
     >>> rng = np.random.default_rng(0)
     >>> n = 500
     >>> X = rng.standard_normal((n, 6))
@@ -192,7 +192,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
     ...     rng.uniform(0, 5000, n),                   # depth (m)
     ...     rng.integers(1990, 2020, n).astype(float), # year
     ... ])
-    >>> imputer = MaSTNetImputer(max_epochs=50, n_neighbours_space=15, n_neighbours_time=15, verbose=False)
+    >>> imputer = SONATIImputer(max_epochs=50, n_neighbours_space=15, n_neighbours_time=15, verbose=False)
     >>> X_filled = imputer.fit_transform(X, coords)
     """
 
@@ -365,7 +365,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
     def fit(self, X, coords, y=None, graph=None):
         """
-        Fit MaSTNeT on spatio-temporal data.
+        Fit SONATI on spatio-temporal data.
 
         Parameters
         ----------
@@ -377,7 +377,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
         graph : dict or None, default=None
             Precomputed k-NN graph with keys ``'space'`` and ``'time'``, each an
             integer array of shape ``(n_samples, k)`` as returned by
-            :func:`mastnet.precompute_graph`. Each scope may provide *more*
+            :func:`sonati.precompute_graph`. Each scope may provide *more*
             neighbours than configured; only the first ``n_neighbours_space`` /
             ``n_neighbours_time`` columns are used. Because the graph depends
             only on the coordinates and ``k``, building it once with the largest
@@ -478,7 +478,7 @@ class MaSTNetImputer(BaseEstimator, TransformerMixin):
 
         # Model
         coord_dim = coords_full.shape[1]
-        self.model_ = MaSTNeT(
+        self.model_ = SONATI(
             n_features=X.shape[1],
             coord_dim=coord_dim,
             d_model=self.d_model,

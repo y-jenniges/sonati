@@ -1,26 +1,26 @@
-# MaSTNeT - Masked Spatio-Temporal Neighbourhood Transformer
+# SONATI - Spatio-temporal Ocean Neighbourhood Asymmetric Transformer for Imputation
 
-`mastnet-imputer` is a Python package for imputing missing values in sparse spatiotemporal data. It implements **MaSTNeT**, a transformer that attends separately to the k-nearest temporal, then spatial, neighbours of each query point and returns both a reconstructed value and a per-point uncertainty estimate.
+`sonati` is a Python package for imputing missing values in sparse spatiotemporal data. It implements **SONATI**, a transformer that attends separately to the k-nearest temporal, then spatial, neighbours of each query point and returns both a reconstructed value and a per-point uncertainty estimate.
 
 The model was developed for oceanographic in-situ observations but applies to any point-cloud data with latitude, longitude, depth, and time coordinates.
 
 ## Installation
 
 ```bash
-pip install mastnet-imputer
+pip install sonati
 ```
 
 Or directly from this repository:
 
 ```bash
-pip install git+https://github.com/y-jenniges/mastnet-imputer.git
+pip install git+https://github.com/y-jenniges/sonati.git
 ```
 
 For local development (editable install):
 
 ```bash
-git clone https://github.com/y-jenniges/mastnet-imputer.git
-pip install -e mastnet-imputer/
+git clone https://github.com/y-jenniges/sonati.git
+pip install -e sonati/
 ```
 
 Requires Python ≥ 3.11 and PyTorch ≥ 2.0.
@@ -29,11 +29,11 @@ Requires Python ≥ 3.11 and PyTorch ≥ 2.0.
 
 ```python
 import numpy as np
-from mastnet import MaSTNetImputer
+from sonati import SONATIImputer
 
 # X      - (n_samples, n_features), NaN marks missing values
 # coords - (n_samples, 4) as [latitude (°), longitude (°), depth (m), time]
-imputer = MaSTNetImputer(
+imputer = SONATIImputer(
     n_neighbours_space=30,
     n_neighbours_time=30,
     loss_name="hetero",   # heteroscedastic NLL — also trains a variance head
@@ -55,7 +55,7 @@ When `transform()` or `predict_with_uncertainty()` is called on the training dat
 To obtain per-point uncertainty estimates alongside imputed values, use `predict_with_uncertainty()`. It runs `n_inference` forward passes with dropout active (MC Dropout) to decompose uncertainty into aleatoric (data noise, from the variance head) and epistemic (model uncertainty, from the spread across passes) components:
 
 ```python
-imputer = MaSTNetImputer(n_inference=50, loss_name="hetero")
+imputer = SONATIImputer(n_inference=50, loss_name="hetero")
 imputer.fit(X_train, coords_train)
 X_filled, aleatoric_std, epistemic_std = imputer.predict_with_uncertainty(X_test, coords_test)
 ```
@@ -120,12 +120,12 @@ Available masking strategies for the `masking` argument:
 The k-NN graph depends only on the coordinates and the neighbour counts - not on feature values or model hyperparameters. On large datasets the graph build can dominate a trial's runtime, so for tuning it can be built once with the largest `k` under consideration and reused; `fit()` slices the first `n_neighbours_space` / `n_neighbours_time` columns per trial:
 
 ```python
-from mastnet import MaSTNetImputer, precompute_graph
+from sonati import SONATIImputer, precompute_graph
 
 graph = precompute_graph(coords, n_neighbours_space=60, n_neighbours_time=60)
 
 for k in (15, 30, 45, 60):
-    imputer = MaSTNetImputer(n_neighbours_space=k, n_neighbours_time=k)
+    imputer = SONATIImputer(n_neighbours_space=k, n_neighbours_time=k)
     imputer.fit(X, coords, graph=graph)   # no k-NN build in the trial
 ```
 
@@ -150,7 +150,7 @@ If you use this package, please cite:
 
 ```bibtex
 @article{jenniges_inprep,
-  title   = {{MaSTNeT}: Masked spatio-temporal neighbourhood transformer for imputation of sparse, tabular, spatio-temporal data with uncertainty},
+  title   = {{SONATI}: Spatio-temporal ocean neighbourhood asymmetric transformer for imputation of sparse, tabular data with uncertainty},
   author  = {Yvonne Jenniges and Boris Peter Koch and Sebastian Maneth},
   journal = {Environmental Data Science},
   year    = {in prep.},

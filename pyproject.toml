@@ -3,14 +3,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mastnet-imputer"
+name = "sonati"
 version = "0.1.0"
-description = "MaSTNeT: Masked Spatio-temporal Neighbourhood Transformer for imputation of sparse oceanographic data"
+description = "SONATI: Spatio-temporal Ocean Neighbourhood Asymmetric Transformer for Imputation of sparse, tabular data with uncertainty"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Yvonne Jenniges" },
+    { name = "Boris Peter Koch" },
+    { name = "Sebastian Maneth"}
 ]
 keywords = [
     "imputation", "spatiotemporal", "oceanography",
@@ -32,8 +35,8 @@ dependencies = [
 ]
 
 [project.urls]
-"Source Code" = "https://github.com/y-jenniges/mastnet-imputer"
-"Bug Tracker"  = "https://github.com/y-jenniges/mastnet-imputer/issues"
+"Source Code" = "https://github.com/y-jenniges/sonati"
+"Bug Tracker"  = "https://github.com/y-jenniges/sonati/issues"
 
 [tool.setuptools.packages.find]
-include = ["mastnet*"]
+include = ["sonati*"]

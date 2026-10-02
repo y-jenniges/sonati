@@ -1,4 +1,4 @@
-"""Coordinate and feature preprocessing for MaSTNeT."""
+"""Coordinate and feature preprocessing for SONATI."""
 
 import numpy as np
 import torch

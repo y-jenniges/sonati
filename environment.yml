@@ -1,4 +1,4 @@
-name: mastnet-imputer
+name: sonati
 channels:
   - conda-forge
   - defaults
@@ -16,4 +16,4 @@ dependencies:
       - requests      # downloading datasets in examples/
       - pandas>=2.0
       - pytest        # running tests/
-      - -e .          # editable install of mastnet-imputer itself
+      - -e .          # editable install of sonati itself

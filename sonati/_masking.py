@@ -1,4 +1,4 @@
-"""Masking strategies for MaSTNeT training.
+"""Masking strategies for SONATI training.
 
 Each strategy is a small, composable, frozen dataclass implementing
 ``MaskStrategy``'s ``mask()`` method.
@@ -227,7 +227,7 @@ def mask_batch(batch: dict, masking: list, device: torch.device,
     Parameters
     ----------
     batch : dict
-        Batch dict from :class:`mastnet._graph.NeighbourDataset`.
+        Batch dict from :class:`sonati._graph.NeighbourDataset`.
     masking : list of MaskStrategy
         Strategies to apply, see :func:`apply_masking_strategies`.
     device : torch.device
@@ -235,7 +235,7 @@ def mask_batch(batch: dict, masking: list, device: torch.device,
         Required when ``masking`` includes a :class:`CopyMask`.
     generator : torch.Generator, optional
         Draw from this generator (must live on ``device``) instead of the
-        global RNG. Passed by :func:`mastnet._training.fit` for validation
+        global RNG. Passed by :func:`sonati._training.fit` for validation
         batches so the same mask is redrawn every epoch (instead of a fresh
         random one). Training keeps using the global RNG.
 

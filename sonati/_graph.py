@@ -1,4 +1,4 @@
-"""k-NN graph construction and neighbour dataset for MaSTNeT."""
+"""k-NN graph construction and neighbour dataset for SONATI."""
 
 from typing import Any, Dict
 import numpy as np
@@ -7,7 +7,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from mastnet._preprocessing import preprocess
+from sonati._preprocessing import preprocess
 
 
 def _knn_indices(coords: np.ndarray, k: int, n_jobs: int | None = None,
@@ -150,7 +150,7 @@ def build_graph(
     Parameters
     ----------
     coords_scaled : Tensor of shape (n, coord_dim)
-        Preprocessed coordinates from :func:`mastnet._preprocessing.preprocess`.
+        Preprocessed coordinates from :func:`sonati._preprocessing.preprocess`.
         Columns 0–3 are (x, y, z, depth); columns 4+ are scaled time.
     n_neighbours_space : int
         Number of nearest neighbours per query in the spatial graph.
@@ -184,12 +184,12 @@ def precompute_graph(
 
     The graph depends only on the coordinates and the neighbour counts -> during
     hyperparameter tuning it can be built once (with the largest ``k`` under
-    consideration) and passed to :meth:`mastnet.MaSTNetImputer.fit` via its
+    consideration) and passed to :meth:`sonati.SONATIImputer.fit` via its
     ``graph`` argument, which slices the first
     ``n_neighbours_space`` / ``n_neighbours_time`` columns per trial.
 
     Note: coordinate scalers are fitted on *all* rows here, whereas
-    :meth:`~mastnet.MaSTNetImputer.fit` fits them on the training rows only.
+    :meth:`~sonati.SONATIImputer.fit` fits them on the training rows only.
 
     Parameters
     ----------

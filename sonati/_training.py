@@ -1,4 +1,4 @@
-"""Training loop, losses and early stopping for MaSTNeT."""
+"""Training loop, losses and early stopping for SONATI."""
 
 from copy import deepcopy
 from typing import Callable
@@ -13,8 +13,8 @@ import logging
 import sys
 from time import strftime, time
 
-from mastnet._masking import mask_batch
-from mastnet._model import LOGVAR_CLAMP
+from sonati._masking import mask_batch
+from sonati._model import LOGVAR_CLAMP
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,7 @@ def reconstruct(model, loader: DataLoader, device: torch.device, verbose: bool =
 
     Parameters
     ----------
-    model : MaSTNeT
+    model : SONATI
     loader : DataLoader
     device : torch.device
     verbose : bool, default=True
@@ -239,7 +239,7 @@ def reconstruct_with_uncertainty(
 
     Parameters
     ----------
-    model : MaSTNeT
+    model : SONATI
     loader : DataLoader
     device : torch.device
     n_inference : int, default=10
@@ -342,7 +342,7 @@ def fit(
 
     Parameters
     ----------
-    model : MaSTNeT
+    model : SONATI
     train_loader : DataLoader
     val_loader : DataLoader
     max_epochs : int
@@ -359,7 +359,7 @@ def fit(
         plain masked MSE, by default ``'hetero'``.
     donor_pool_mask : Tensor, shape (N_pool, F), dtype bool, optional
         Population to draw copy-mask donors from (the full training set).
-        Required when ``masking`` includes a :class:`mastnet.CopyMask`.
+        Required when ``masking`` includes a :class:`sonati.CopyMask`.
     grad_clip_norm : float, default=1.0
         Maximum gradient norm for :func:`torch.nn.utils.clip_grad_norm_`
         applied before each optimiser step. Set to ``0`` to disable.

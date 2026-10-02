@@ -1,4 +1,4 @@
-"""MaSTNeT model - factorised time-space cross-attention imputer."""
+"""SONATI model - factorised time-space cross-attention imputer."""
 
 import torch
 import torch.nn as nn
@@ -35,9 +35,9 @@ class _CrossAttentionBlock(nn.Module):
         return self.norm2(q + self.mlp(q))
 
 
-class MaSTNeT(nn.Module):
+class SONATI(nn.Module):
     """
-    Masked Spatio-temporal Neighbourhood Transformer.
+    Spatio-temporal Ocean Neighbourhood Asymmetric Transformer for Imputation.
 
     Reconstructs missing values in spatio-temporal point-cloud data by attending
     to k-nearest temporal neighbours first, then k-nearest spatial neighbours

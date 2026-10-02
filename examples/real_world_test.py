@@ -1,5 +1,5 @@
 """
-Demo of MaSTNeT imputer on two real spatio-temporal benchmark datasets
+Demo of SONATI imputer on two real spatio-temporal benchmark datasets
 (not a tuned benchmark, settings are made to keep the script fast).
 
 Usage
@@ -8,7 +8,7 @@ Usage
     python examples/real_world_test.py air  # air quality only
     python examples/real_world_test.py traffic  # traffic only
 
-Requirements (beyond mastnet-imputer deps)
+Requirements (beyond sonati deps)
 ------------------------------------------
     pip install requests tables
 
@@ -28,7 +28,7 @@ Models
   Mean fill - Per-feature column mean.
   KNN (feat) - sklearn KNNImputer(k=5) in feature space.
                Finds nearest neighbours by feature similarity, ignores lat/lon/time.
-  MaSTNeT - Spatio-temporal cross-attention (this package).
+  SONATI - Spatio-temporal cross-attention (this package).
 
 Metrics
 -------
@@ -42,7 +42,7 @@ Comparability to published benchmarks
 --------------------------------------
 Both reference tables are a rough sanity check. The benchmarked
 numbers result from training on the full datasets (here we only use a subset)
-and properly tuned architectures (here only small, briefly tuned MaSTNeT).
+and properly tuned architectures (here only small, briefly tuned SONATI).
 Benchmark numbers originate from:
     Cini et al 2022: Andrea Cini, Ivan Marisca, & Cesare Alippi (2022).
     Filling the G_ap_s: Multivariate Time Series Imputation by Graph Neural Networks.
@@ -62,7 +62,7 @@ import numpy as np
 from sklearn.impute import KNNImputer, SimpleImputer
 from sklearn.model_selection import train_test_split
 
-from mastnet import MaSTNetImputer
+from sonati import SONATIImputer
 from _tsl_helpers import load_metr_la, load_aqi36
 
 CACHE_DIR = Path(__file__).parent / ".cache"
@@ -180,7 +180,7 @@ def run_air_quality() -> None:
     lats = stations_df.loc[station_ids, "latitude"].values  # (36,)
     lons = stations_df.loc[station_ids, "longitude"].values  # (36,)
 
-    # Hours since the first sample (the numeric time coordinate MaSTNet requires)
+    # Hours since the first sample (the numeric time coordinate SONATI requires)
     t0 = pm25_sub.index[0]
     t_h = np.array([(t - t0).total_seconds() / 3600 for t in pm25_sub.index])
 
@@ -189,7 +189,7 @@ def run_air_quality() -> None:
     t_flat = np.tile(t_h, n_s)  # hour for each row
     X = pm25_sub.values.T.flatten().reshape(-1, 1)  # (12096, 1)
 
-    # Build coordinates (one empty column as MaSTNeT expects depth)
+    # Build coordinates (one empty column as SONATI expects depth)
     lats_flat = np.repeat(lats, n_t)  # station lat for each row
     lons_flat = np.repeat(lons, n_t)
     coords = np.column_stack([lats_flat, lons_flat, np.zeros(len(X)), t_flat])
@@ -221,19 +221,19 @@ def run_air_quality() -> None:
     results["KNN feat-space (k=5)"] = _compute_metrics(X, X_knn, held_out, AQ_VARS)
     print(" done")
 
-    # MaSTNeT (simple config)
-    print("  Running MaSTNeT ...")
-    imputer = MaSTNetImputer(
+    # SONATI (simple config)
+    print("  Running SONATI ...")
+    imputer = SONATIImputer(
         val_indices=val_idx,
         n_neighbours_space=15, n_neighbours_time=15, max_epochs=20, patience=5,
         d_model=32, dim_feedforward=64,
         n_spatial_layers=2, n_temporal_layers=2,
         device="auto", seed=42,
     )
-    X_mastnet = imputer.fit_transform(X_masked, coords)
-    obs_mae = np.abs(X_mastnet[~np.isnan(X_masked)] - X_masked[~np.isnan(X_masked)]).mean()
+    X_sonati = imputer.fit_transform(X_masked, coords)
+    obs_mae = np.abs(X_sonati[~np.isnan(X_masked)] - X_masked[~np.isnan(X_masked)]).mean()
     print(f"  MAE on observed values: {obs_mae:.4f}  [should be ~0]")  # sanity check
-    results["MaSTNet"] = _compute_metrics(X, X_mastnet, held_out, AQ_VARS)
+    results["SONATI"] = _compute_metrics(X, X_sonati, held_out, AQ_VARS)
 
     # Print results (and actual benchmark results)
     _print_tables(
@@ -274,7 +274,7 @@ def run_traffic() -> None:
     lats = locations.loc[sensor_ids, "latitude"].values  # (207,)
     lons = locations.loc[sensor_ids, "longitude"].values  # (207,)
 
-    # Hours since the first sample (the numeric time coordinate MaSTNeT expects)
+    # Hours since the first sample (the numeric time coordinate SONATI expects)
     t0 = speed_sub.index[0]
     t_h = np.array([(t - t0).total_seconds() / 3600 for t in speed_sub.index])
 
@@ -285,7 +285,7 @@ def run_traffic() -> None:
     t_flat = np.tile(t_h, n_s)  # hour for each row
     X = speed_sub.values.T.flatten().reshape(-1, 1)  # (14904, 1)
 
-    # Build coordinates (one empty column as MaSTNeT expects depth)
+    # Build coordinates (one empty column as SONATI expects depth)
     coords = np.column_stack([lats_flat, lons_flat, np.zeros(len(X)), t_flat])
 
     # Hold out 25 % of observed readings for evaluation (test data)
@@ -302,7 +302,7 @@ def run_traffic() -> None:
           f"({held_out_test.sum()} evaluable cells), {len(val_idx)} rows for early stopping")
     print(f"  Unit: Speed in mph")
 
-    # Hide test indexes (for baselines, MaSTNeT hides them internally)
+    # Hide test indexes (for baselines, SONATI hides them internally)
     X_masked_baseline = X_masked.copy()
     X_masked_baseline[test_idx] = np.nan
 
@@ -318,19 +318,19 @@ def run_traffic() -> None:
     results["KNN feat-space (k=5)"] = _compute_metrics(X, X_knn, held_out_test, TRAFFIC_VARS)
     print(" done")
 
-    # MaSTNeT (small demo)
-    print("  Running MaSTNet ...")
-    imputer = MaSTNetImputer(
+    # SONATI (small demo)
+    print("  Running SONATI ...")
+    imputer = SONATIImputer(
         val_indices=val_idx, test_idx=test_idx,
         n_neighbours_space=15, n_neighbours_time=15, max_epochs=20, patience=5,
         d_model=32, dim_feedforward=64,
         n_spatial_layers=2, n_temporal_layers=2,
         device="auto", seed=0,
     )
-    X_mastnet = imputer.fit_transform(X_masked, coords)
-    obs_mae = np.abs(X_mastnet[~np.isnan(X_masked)] - X_masked[~np.isnan(X_masked)]).mean()
+    X_sonati = imputer.fit_transform(X_masked, coords)
+    obs_mae = np.abs(X_sonati[~np.isnan(X_masked)] - X_masked[~np.isnan(X_masked)]).mean()
     print(f"  MAE on observed values: {obs_mae:.4f}  [should be ~0]")  # sanity check
-    results["MaSTNet"] = _compute_metrics(X, X_mastnet, held_out_test, TRAFFIC_VARS)
+    results["SONATI"] = _compute_metrics(X, X_sonati, held_out_test, TRAFFIC_VARS)
 
     # Print results (and actual benchmark results)
     _print_tables(
