@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "SONATI: Spatio-temporal Ocean Neighbourhood Asymmetric Transformer for Imputation of sparse, tabular data with uncertainty"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
 license-files = ["LICENSE"]
 authors = [
     { name = "Yvonne Jenniges" },
