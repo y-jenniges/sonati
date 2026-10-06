@@ -3,7 +3,7 @@
 from copy import deepcopy
 from typing import Callable
 import math
-import os
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -334,7 +334,7 @@ def fit(
         grad_clip_norm: float = 1.0,
         verbose: bool = True,
         seed: int = 0,
-        checkpoint_path: str | os.PathLike | None = None,
+        checkpoint_path: str | Path | None = None,
 ) -> dict:
     """Train ``model`` in-place with early stopping; restores best weights.
 
@@ -396,8 +396,13 @@ def fit(
     start_epoch = 0
     finished = False
 
+    # Create the checkpoint directory
+    if checkpoint_path is not None:
+        checkpoint_path = Path(checkpoint_path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
     # If a checkpoint path is given, resume from last saved model state
-    if checkpoint_path is not None and os.path.exists(checkpoint_path):
+    if checkpoint_path is not None and checkpoint_path.exists():
         # Load checkpoint data
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model"])  # model
@@ -414,14 +419,14 @@ def fit(
         """Saves model, early-stopper and history states to ``checkpoint_path``."""
         if checkpoint_path is None:
             return
-        tmp = f"{checkpoint_path}.tmp"
+        tmp_path = checkpoint_path.with_name(checkpoint_path.name + ".tmp")
         torch.save({
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "stopper": dict(stopper.__dict__), "best_state": best_state,
             "train_history": train_history, "val_history": val_history,
             "finished": is_finished,
-        }, tmp)
-        os.replace(tmp, checkpoint_path)  # a kill mid-write keeps the old file
+        }, tmp_path)
+        tmp_path.replace(checkpoint_path)  # a kill mid-write keeps the old file
 
     for epoch in tqdm(range(start_epoch, start_epoch if finished else max_epochs), desc="Training",
                       unit="epoch", disable=not _tqdm_ok(verbose), initial=start_epoch,

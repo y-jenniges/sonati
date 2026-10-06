@@ -9,6 +9,7 @@ from typing import Dict
 import numpy as np
 import torch
 from torch import Tensor
+from pathlib import Path
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
 from torch.utils.data import DataLoader
@@ -229,7 +230,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             num_workers: int = 0,
             pin_memory: bool = False,
             inference_num_workers: int = 0,
-            checkpoint_path: str | None = None,
+            checkpoint_path: str | Path | None = None,
     ):
         self.n_neighbours_space = n_neighbours_space
         self.n_neighbours_time = n_neighbours_time
