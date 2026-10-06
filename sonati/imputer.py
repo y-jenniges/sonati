@@ -109,6 +109,9 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         NaN. Set to ``0`` to disable.
     patience : int, default=10
         Early-stopping patience (epochs without validation improvement).
+    checkpoint_path : str or None, default=None
+        If given, the training state is stored there so that training can be
+        interrupted and resumed.
     cyclic_time : bool, default=False
         Encode time cyclically with sine/cosine. Useful for monthly data
         (pass month 1–12 as the time column); use False for yearly data.
@@ -226,6 +229,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             num_workers: int = 0,
             pin_memory: bool = False,
             inference_num_workers: int = 0,
+            checkpoint_path: str | None = None,
     ):
         self.n_neighbours_space = n_neighbours_space
         self.n_neighbours_time = n_neighbours_time
@@ -255,6 +259,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.inference_num_workers = inference_num_workers
+        self.checkpoint_path = checkpoint_path
 
     def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return (train_idx, val_idx) from ``val_indices``."""
@@ -500,6 +505,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             grad_clip_norm=self.grad_clip_norm,
             verbose=self.verbose,
             seed=self.seed,
+            checkpoint_path=self.checkpoint_path,
         )
 
         self.device_ = device

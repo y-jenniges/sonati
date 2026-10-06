@@ -219,6 +219,26 @@ def test_history_():
     assert all(np.isfinite(v) for v in imputer.history_["val"].values())
 
 
+def test_checkpoint_resume(tmp_path):
+    # Interrupted run (2 of 4 epochs) resumes to 4 epochs
+    X, coords = _dummy_data()
+    checkpoint = str(tmp_path / "checkpoint.pt")
+    params = {**_FAST, "patience": 10, "checkpoint_path": checkpoint}
+
+    # Train for 2 epochs
+    first = SONATIImputer(**{**params, "max_epochs": 2}).fit(X, coords)
+    assert len(first.history_["train"]) == 2
+
+    # Resume training (continue until epoch 4)
+    resumed = SONATIImputer(**{**params, "max_epochs": 4}).fit(X, coords)
+    assert len(resumed.history_["train"]) == 4
+    assert resumed.history_["train"][0] == first.history_["train"][0]  # history carried over
+
+    # No further training, if max_epochs (4) is reached
+    again = SONATIImputer(**{**params, "max_epochs": 4}).fit(X, coords)
+    assert again.history_ == resumed.history_
+
+
 def test_fill_strategy_mean():
     # Test mean filling
     X, coords = _dummy_data()

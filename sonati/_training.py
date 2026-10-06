@@ -3,6 +3,7 @@
 from copy import deepcopy
 from typing import Callable
 import math
+import os
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -333,12 +334,16 @@ def fit(
         grad_clip_norm: float = 1.0,
         verbose: bool = True,
         seed: int = 0,
+        checkpoint_path: str | os.PathLike | None = None,
 ) -> dict:
     """Train ``model`` in-place with early stopping; restores best weights.
 
-    Training aborts as soon as the train or validation loss becomes non-finite
-    (instead of burning the remaining patience on NaN epochs); the best weights
-    seen so far are restored either way.
+    Interrupted training can be resumed if ``checkpoint_path`` is given. In that
+    case, the full training state (model, optimiser, early-stopper, best weights, loss history)
+    is written there after every epoch.
+    Note: The train-loader shuffle order after a resume differs from an uninterrupted run.
+
+    Training aborts as soon as the train or validation loss becomes non-finite.
 
     Parameters
     ----------
@@ -369,6 +374,9 @@ def fit(
     seed : int, default=0
         Seeds a dedicated generator for validation masking, reset before
         every epoch so the *same* positions are hidden each time.
+    checkpoint_path : str or None, default None
+        If given, the training state is stored there so that training can be
+        interrupted and resumed.
 
     Returns
     -------
@@ -384,7 +392,40 @@ def fit(
     val_history: list[float] = []
     val_mask_generator = torch.Generator(device=device)
 
-    for epoch in tqdm(range(max_epochs), desc="Training", unit="epoch", disable=not _tqdm_ok(verbose)):
+    # Epoch status monitoring
+    start_epoch = 0
+    finished = False
+
+    # If a checkpoint path is given, resume from last saved model state
+    if checkpoint_path is not None and os.path.exists(checkpoint_path):
+        # Load checkpoint data
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint["model"])  # model
+        optimizer.load_state_dict(checkpoint["optimizer"])  # optimiser
+        stopper.__dict__.update(checkpoint["stopper"])  # early-stopper
+        stopper.patience = patience  # update patience to current setting
+        best_state = checkpoint["best_state"]  # best state
+        train_history, val_history = checkpoint["train_history"], checkpoint["val_history"]  # history
+        start_epoch, finished = len(train_history), checkpoint["finished"]  # epoch status
+        logger.info("Resumed from checkpoint %s at epoch %d (best=%d, finished=%s)",
+                    checkpoint_path, start_epoch, stopper.best_epoch, finished)
+
+    def _save_checkpoint(is_finished: bool) -> None:
+        """Saves model, early-stopper and history states to ``checkpoint_path``."""
+        if checkpoint_path is None:
+            return
+        tmp = f"{checkpoint_path}.tmp"
+        torch.save({
+            "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "stopper": dict(stopper.__dict__), "best_state": best_state,
+            "train_history": train_history, "val_history": val_history,
+            "finished": is_finished,
+        }, tmp)
+        os.replace(tmp, checkpoint_path)  # a kill mid-write keeps the old file
+
+    for epoch in tqdm(range(start_epoch, start_epoch if finished else max_epochs), desc="Training",
+                      unit="epoch", disable=not _tqdm_ok(verbose), initial=start_epoch,
+                      total=max_epochs):
         # One training epoch, one validation epoch
         train_loss = _train_epoch(
             model, train_loader, optimizer, loss_fn, masking, device,
@@ -429,8 +470,11 @@ def fit(
         if _tqdm_ok(verbose):
             tqdm.write(msg)
 
-        # Abort immediately on a non-finite loss
-        if not (np.isfinite(train_loss) and np.isfinite(val_loss)):
+        is_non_finite = not (np.isfinite(train_loss) and np.isfinite(val_loss))  # check if loss is non-finite
+        _save_checkpoint(is_finished=is_non_finite or should_stop)  # reaching max_epochs stays resumable
+
+        # Abort on a non-finite loss
+        if is_non_finite:
             abort_msg = (
                 f"[{strftime('%d-%m-%Y %H:%M:%S')}] Non-finite loss at epoch {epoch} "
                 f"(train={train_loss}, val={val_loss}); aborting training and "
