@@ -4,6 +4,7 @@ a sklearn-compatible spatio-temporal imputer.
 
 import logging
 import multiprocessing as mp
+import warnings
 from time import time
 from typing import Dict
 import numpy as np
@@ -320,6 +321,14 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         if torch.equal(coords_scaled, self.coords_full_):
             logger.info("Coordinates match the training data; reusing the k-NN graph from fit().")
             return self.graph_
+
+        # Raise error if not enough points were passed at inference
+        k_max = max(self.n_neighbours_space, self.n_neighbours_time)
+        if len(coords_scaled) <= k_max:
+            raise ValueError(
+                f"Need more than max(n_neighbours_space, n_neighbours_time)={k_max} rows "
+                f"to build a k-NN graph for inference, got {len(coords_scaled)}. "
+            )
         logger.info(
             "Building k-NN graph (n=%d, k_space=%d, k_time=%d)...",
             len(coords_scaled), self.n_neighbours_space, self.n_neighbours_time,
@@ -599,6 +608,9 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         Requires ``n_inference > 1`` to produce a meaningful epistemic estimate;
         with ``n_inference=1`` ``epistemic_std`` will be all zeros.
 
+        Aleatoric uncertainty requires ``loss_name='hetero'``. With
+        ``loss_name='mse'`` the variance head is never trained.
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
@@ -624,6 +636,14 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             per-pass mean predictions, inverse-transformed to physical units.
         """
         check_is_fitted(self, ["model_", "scaler_dict_"])
+
+        # MSE loss does not train the variance head -> warn
+        mse_loss = self.loss_name == "mse"
+        if mse_loss:
+            warnings.warn(
+                "loss_name='mse' does not train the variance head and aleatoric_std is returned as NaN.",
+                UserWarning, stacklevel=2,
+            )
 
         X = np.asarray(X, dtype=float)
         coords = np.asarray(coords, dtype=float)
@@ -653,6 +673,9 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         # Unscale predictions and uncertainties to physical units
         mean_np = inverse_transform(mean_t.numpy(), self.scaler_dict_, self.feature_names_)
         aleatoric_np = inverse_transform_std(aleatoric_t.numpy(), self.scaler_dict_, self.feature_names_)
+        if mse_loss:
+            # Return NaN variance for MSE loss
+            aleatoric_np = np.full_like(aleatoric_np, np.nan)
         epistemic_np = inverse_transform_std(epistemic_t.numpy(), self.scaler_dict_, self.feature_names_)
 
         X_out = X.copy()

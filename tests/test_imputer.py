@@ -87,6 +87,37 @@ def test_predict_with_uncertainty():
     assert (epistemic_det == 0).all()
 
 
+def test_predict_with_uncertainty_mse_warns_and_returns_nan_aleatoric():
+    # The variance head is untrained with loss='mse', so aleatoric std should be NaN
+    X, coords = _dummy_data()
+    imputer = SONATIImputer(**{**_FAST, "loss_name": "mse"})
+    imputer.fit(X, coords)
+
+    # Warning is generated
+    with pytest.warns(UserWarning, match="variance head"):
+        X_filled, aleatoric_std, epistemic_std = imputer.predict_with_uncertainty(X, coords)
+
+    # Aleatoric uncertainty is NaN, but epistemic is still reported and imputation is done
+    assert np.isnan(aleatoric_std).all()
+    assert np.isfinite(epistemic_std).all()
+    assert not np.isnan(X_filled).any()
+
+
+def test_transform_too_few_rows_raises():
+    # Raise error if fewer than k+1 new rows are passed for inference - they cannot form a neighbourhood
+    X, coords = _dummy_data()
+    imputer = SONATIImputer(**_FAST)
+    imputer.fit(X, coords)
+
+    with pytest.raises(ValueError, match="more than"):
+        # Transform raises
+        imputer.transform(X[:10], coords[:10])
+
+    with pytest.raises(ValueError, match="more than"):
+        # Predict with uncertainty raises
+        imputer.predict_with_uncertainty(X[:10], coords[:10])
+
+
 def test_predict_with_uncertainty_realisations():
     # return_realisations=True must expose the individual MC-dropout draws,
     # in physical units, whose mean matches the aggregate X_filled prediction
