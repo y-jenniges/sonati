@@ -103,6 +103,37 @@ def test_predict_with_uncertainty_mse_warns_and_returns_nan_aleatoric():
     assert not np.isnan(X_filled).any()
 
 
+def test_beta_nll_fit_and_uncertainty():
+    # beta-NLL trains the variance head, so aleatoric std is finite
+    X, coords = _dummy_data()
+    imputer = SONATIImputer(**{**_FAST, "loss_name": "beta_nll", "loss_kwargs": {"beta": 0.5}})
+    imputer.fit(X, coords)
+    X_filled, aleatoric_std, _ = imputer.predict_with_uncertainty(X, coords)
+    assert not np.isnan(X_filled).any()
+    assert np.isfinite(aleatoric_std).all()
+
+
+def test_beta_nll_beta_zero_matches_hetero():
+    # beta=0 must reduce to the plain heteroscedastic NLL
+    from sonati._training import _beta_nll, _heteroscedastic_nll
+    g = torch.Generator().manual_seed(0)
+    mean, logvar, target = (torch.randn(20, 3, generator=g) for _ in range(3))
+    mask = torch.rand(20, 3, generator=g) > 0.3
+    torch.testing.assert_close(_beta_nll(mean, logvar, target, mask, beta=0.0),
+                               _heteroscedastic_nll(mean, logvar, target, mask))
+
+
+def test_loss_kwargs_validation():
+    # Unknown kwargs and out-of-range beta are rejected
+    from sonati._training import _build_loss
+    with pytest.raises(TypeError):
+        _build_loss("hetero", {"beta": 0.5})
+    with pytest.raises(TypeError):
+        _build_loss("beta_nll", {"bta": 0.5})
+    with pytest.raises(ValueError):
+        _build_loss("beta_nll", {"beta": 1.5})
+
+
 def test_transform_too_few_rows_raises():
     # Raise error if fewer than k+1 new rows are passed for inference - they cannot form a neighbourhood
     X, coords = _dummy_data()

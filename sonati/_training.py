@@ -46,14 +46,57 @@ def _heteroscedastic_nll(pred_mean: Tensor, pred_logvar: Tensor,
     return (0.5 * (pred_logvar[mask] + (target[mask] - pred_mean[mask]) ** 2 / var)).mean()
 
 
-def _build_loss(loss_name: str) -> Callable:
-    """Return the loss callable corresponding to ``loss_name``."""
+def _beta_nll(pred_mean: Tensor, pred_logvar: Tensor,
+              target: Tensor, mask: Tensor, beta: float = 0.5) -> Tensor:
+    """Beta-NLL loss. It multiplies each point's Gaussian heteroscedastic NLL by its predicted variance^β.
+
+    Beta is the weighing of the exponent and in [0, 1].
+    ``beta=0`` gives the plain heteroscedastic NLL,
+    ``beta=1`` results in an MSE loss, while variance is still learned.
+
+    Reference:
+    Seitzer, M., Tavakoli, A., Antic, D., & Martius, G. (2022). On the
+    pitfalls of heteroscedastic uncertainty estimation with probabilistic
+    neural networks. International Conference on Learning Representations
+    (ICLR). https://openreview.net/forum?id=aPOpXlnV1T
+    """
+    logvar = pred_logvar[mask]
+    # Variance floored to match the model head's logvar clamp
+    var = logvar.exp().clamp(min=_VAR_FLOOR)
+    nll = 0.5 * (logvar + (target[mask] - pred_mean[mask]) ** 2 / var)
+    return (var.detach() ** beta * nll).mean()
+
+
+def _build_loss(loss_name: str, loss_kwargs: dict | None = None) -> Callable:
+    """
+    Return the loss callable corresponding to ``loss_name``.
+
+    ``loss_kwargs`` are loss-specific options (e.g. ``{"beta": 0.5}`` for
+    ``'beta_nll'``); unexpected keys raise a ``TypeError``.
+    """
+    # Loss-specific function calls
+    loss_kwargs = dict(loss_kwargs or {})
     if loss_name == "mse":
-        return lambda mean, logvar, target, mask: _masked_mse(mean, target, mask)
+        loss = lambda mean, logvar, target, mask: _masked_mse(mean, target, mask)
+        allowed: set[str] = set()
     elif loss_name == "hetero":
-        return _heteroscedastic_nll
+        loss = _heteroscedastic_nll
+        allowed = set()
+    elif loss_name == "beta_nll":
+        beta = loss_kwargs.get("beta", 0.5)
+        if not 0.0 <= beta <= 1.0:
+            raise ValueError(f"beta must lie in [0, 1], got {beta}.")
+        loss = lambda mean, logvar, target, mask: _beta_nll(mean, logvar, target, mask, beta=beta)
+        allowed = {"beta"}
     else:
-        raise ValueError(f"Unknown loss_name '{loss_name}'. Choose 'mse' or 'hetero'.")
+        raise ValueError(f"Unknown loss_name '{loss_name}'. Choose 'mse', 'hetero' or 'beta_nll'.")
+
+    # Check if unknown loss kwargs were passed
+    unexpected = set(loss_kwargs) - allowed
+    if unexpected:
+        raise TypeError(f"loss_name '{loss_name}' got unexpected loss_kwargs {sorted(unexpected)}; "
+                        f"allowed: {sorted(allowed) or 'none'}.")
+    return loss
 
 
 def _to_device(obj, device: torch.device):
@@ -335,6 +378,7 @@ def fit(
         verbose: bool = True,
         seed: int = 0,
         checkpoint_path: str | Path | None = None,
+        loss_kwargs: dict | None = None,
 ) -> dict:
     """Train ``model`` in-place with early stopping; restores best weights.
 
@@ -360,8 +404,9 @@ def fit(
         Early-stopping patience in epochs.
     device : torch.device
     loss_name : str, optional
-        ``'hetero'`` for heteroscedastic Gaussian NLL or ``'mse'`` for
-        plain masked MSE, by default ``'hetero'``.
+        ``'hetero'`` for heteroscedastic Gaussian NLL, ``'beta_nll'`` for the
+        beta-NLL of Seitzer et al. (2022), or ``'mse'`` for masked MSE.
+        Default is ``'hetero'``.
     donor_pool_mask : Tensor, shape (N_pool, F), dtype bool, optional
         Population to draw copy-mask donors from (the full training set).
         Required when ``masking`` includes a :class:`sonati.CopyMask`.
@@ -377,6 +422,9 @@ def fit(
     checkpoint_path : str or None, default None
         If given, the training state is stored there so that training can be
         interrupted and resumed.
+    loss_kwargs : dict or None, default None
+        Extra args for the loss, e.g. ``'beta_nll'`` accepts
+        ``{"beta": float}``.
 
     Returns
     -------
@@ -385,7 +433,7 @@ def fit(
         entry per epoch.
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = _build_loss(loss_name)
+    loss_fn = _build_loss(loss_name, loss_kwargs)
     stopper = EarlyStopping(patience=patience)
     best_state = deepcopy(model.state_dict())
     train_history: list[float] = []

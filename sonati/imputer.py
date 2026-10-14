@@ -87,8 +87,12 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         How to fill unobserved positions before attention: ``'zero'`` or
         ``'mean'`` (global per-feature mean estimated from training data).
     loss_name : str, default='hetero'
-        Training loss: ``'hetero'`` for heteroscedastic Gaussian NLL
-        (trains the variance head) or ``'mse'`` for plain masked MSE.
+        Training loss: ``'hetero'`` for heteroscedastic Gaussian NLL,
+        ``'beta_nll'`` for the beta-NLL of Seitzer et al. (2022) or
+        ``'mse'`` for masked MSE.
+    loss_kwargs : dict or None, default=None
+        Extra options for the loss, e.g. ``'beta_nll'`` accepts
+        ``{"beta": float}``.
     max_epochs : int, default=100
         Maximum number of training epochs.
     lr : float, default=1e-3
@@ -215,6 +219,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             dropout: float = 0.1,
             fill_strategy: str = "zero",
             loss_name: str = "hetero",
+            loss_kwargs: dict | None = None,
             max_epochs: int = 100,
             lr: float = 1e-3,
             batch_size: int = 64,
@@ -243,6 +248,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         self.dropout = dropout
         self.fill_strategy = fill_strategy
         self.loss_name = loss_name
+        self.loss_kwargs = loss_kwargs
         self.max_epochs = max_epochs
         self.lr = lr
         self.batch_size = batch_size
@@ -511,6 +517,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             max_epochs=self.max_epochs, lr=self.lr,
             masking=masking, patience=self.patience,
             device=device, loss_name=self.loss_name,
+            loss_kwargs=self.loss_kwargs,
             donor_pool_mask=donor_pool_mask,
             grad_clip_norm=self.grad_clip_norm,
             verbose=self.verbose,
@@ -608,8 +615,8 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         Requires ``n_inference > 1`` to produce a meaningful epistemic estimate;
         with ``n_inference=1`` ``epistemic_std`` will be all zeros.
 
-        Aleatoric uncertainty requires ``loss_name='hetero'``. With
-        ``loss_name='mse'`` the variance head is never trained.
+        Aleatoric uncertainty requires ``loss_name='hetero'`` or ``'beta_nll'``.
+        With ``loss_name='mse'`` the variance head is never trained.
 
         Parameters
         ----------
