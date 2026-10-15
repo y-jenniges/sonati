@@ -119,8 +119,8 @@ def test_beta_nll_beta_zero_matches_hetero():
     g = torch.Generator().manual_seed(0)
     mean, logvar, target = (torch.randn(20, 3, generator=g) for _ in range(3))
     mask = torch.rand(20, 3, generator=g) > 0.3
-    torch.testing.assert_close(_beta_nll(mean, logvar, target, mask, beta=0.0),
-                               _heteroscedastic_nll(mean, logvar, target, mask))
+    torch.testing.assert_close(_beta_nll(mean, logvar, target, mask, var_floor=1e-4, beta=0.0),
+                               _heteroscedastic_nll(mean, logvar, target, mask, var_floor=1e-4))
 
 
 def test_loss_kwargs_validation():
@@ -407,6 +407,72 @@ def test_logvar_clamped():
     assert torch.isfinite(pred_logvar.exp()).all()
 
 
+def _dummy_batch(B: int = 4, K: int = 5):
+    # Dummy batch with space and time scopes
+    batch = {
+        "query_features": torch.randn(B, 2),
+        "query_mask": torch.ones(B, 2, dtype=torch.bool),
+        "query_coords": torch.rand(B, 5),
+    }
+    for scope in ("space", "time"):
+        batch[scope] = {
+            "features": torch.randn(B, K, 2),
+            "mask": torch.ones(B, K, 2, dtype=torch.bool),
+            "coords": torch.rand(B, K, 5),
+            "rel_positions": torch.rand(B, K, 5),
+        }
+    return batch
+
+
+@pytest.mark.parametrize("clamp", [2.0, 20.0])
+def test_logvar_clamp_custom(clamp):
+    # A non-default clamp bounds the logvar head, in both directions
+    from sonati._model import SONATI
+    model = SONATI(n_features=2, coord_dim=5, d_model=16, dim_feedforward=32, logvar_clamp=clamp)
+    assert model.logvar_clamp == clamp
+    for bias in (1e4, -1e4):
+        with torch.no_grad():
+            model.logvar_head.bias.fill_(bias)
+        _, pred_logvar = model(_dummy_batch())
+        assert pred_logvar.abs().max().item() == pytest.approx(clamp)
+
+
+def test_logvar_clamp_invalid():
+    # A logvar_clamp <= 0 raises
+    from sonati._model import SONATI
+    with pytest.raises(ValueError):
+        SONATI(n_features=2, logvar_clamp=0.0)
+
+
+@pytest.mark.parametrize("loss_name", ["hetero", "beta_nll"])
+def test_loss_var_floor_follows_clamp(loss_name):
+    # Variance floor is exp(-clamp): with the logvar at -20, a clamp of 10 floors the variance at
+    # e^-10, whereas a clamp of 20 leaves it at e^-20
+    from sonati._training import _build_loss
+    pred_mean = torch.zeros(1, 1)
+    target = torch.ones(1, 1)
+    mask = torch.ones(1, 1, dtype=torch.bool)
+    logvar = torch.full((1, 1), -20.0)
+    # Evaluate loss with different logvar clamps
+    loss_10 = _build_loss(loss_name, logvar_clamp=10.0)(pred_mean, logvar, target, mask)
+    loss_20 = _build_loss(loss_name, logvar_clamp=20.0)(pred_mean, logvar, target, mask)
+    # Check if the clamp influenced the loss
+    assert not torch.isclose(loss_10, loss_20)
+
+
+def test_logvar_clamp_imputer():
+    # Imputer passes the clamp to the model and supports sklearn clone/get_params
+    from sklearn.base import clone
+    X, coords = _dummy_data()
+    imputer = SONATIImputer(**_FAST, logvar_clamp=0.01)
+    assert imputer.get_params()["logvar_clamp"] == 0.01  # logvar_clamp is stored correctly
+    assert clone(imputer).logvar_clamp == 0.01  # logvar_clamp is passed on clone
+    assert SONATIImputer(**_FAST).logvar_clamp == 10.0  # default is 10
+
+    imputer.fit(X, coords)
+    assert imputer.model_.logvar_clamp == 0.01  # clamp remains after fit
+
+
 def test_fit_aborts_on_nonfinite_loss(monkeypatch, caplog):
     # A non-finite epoch loss must abort training instead of burning patience
     from sonati import _training
@@ -415,6 +481,8 @@ def test_fit_aborts_on_nonfinite_loss(monkeypatch, caplog):
     monkeypatch.setattr(_training, "_eval_epoch", lambda *a, **k: float("nan"))
 
     model = torch.nn.Linear(1, 1)
+
+    model.logvar_clamp = 10.0  # fit() reads the clamp from the model
     with caplog.at_level(logging.INFO, logger="sonati._training"):
         _training.fit(
             model, train_loader=[], val_loader=[],
@@ -457,6 +525,7 @@ def test_fit_restores_true_best_not_last_snapshot(monkeypatch):
 
     # Fit a dummy model
     model = torch.nn.Linear(1, 1)  # dummy model
+    model.logvar_clamp = 10.0  # fit() reads the clamp from the model
     _training.fit(
         model, train_loader=[], val_loader=[],
         max_epochs=10, lr=1e-3, masking=[RandomMask()], patience=2,
@@ -490,6 +559,7 @@ def test_fit_reseeds_validation_generator_every_epoch(monkeypatch):
 
     # Fit a dummy model
     model = torch.nn.Linear(1, 1)
+    model.logvar_clamp = 10.0  # fit() reads the clamp from the model
     _training.fit(
         model, train_loader=[], val_loader=[],
         max_epochs=4, lr=1e-3, masking=[RandomMask()], patience=10,

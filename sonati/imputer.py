@@ -118,6 +118,9 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
     checkpoint_path : str or None, default=None
         If given, the training state is stored there so that training can be
         interrupted and resumed.
+    logvar_clamp : float, default=10.0
+        The predicted log-variance is clamped to ``[-logvar_clamp, logvar_clamp]``
+        and the variance floor of the NLL losses is set to ``exp(-logvar_clamp)``.
     cyclic_time : bool, default=False
         Encode time cyclically with sine/cosine. Useful for monthly data
         (pass month 1–12 as the time column); use False for yearly data.
@@ -237,6 +240,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             pin_memory: bool = False,
             inference_num_workers: int = 0,
             checkpoint_path: str | Path | None = None,
+            logvar_clamp: float = 10.0,
     ):
         self.n_neighbours_space = n_neighbours_space
         self.n_neighbours_time = n_neighbours_time
@@ -268,6 +272,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         self.pin_memory = pin_memory
         self.inference_num_workers = inference_num_workers
         self.checkpoint_path = checkpoint_path
+        self.logvar_clamp = logvar_clamp
 
     def _make_train_val_split(self, coords_raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return (train_idx, val_idx) from ``val_indices``."""
@@ -510,6 +515,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             dropout=self.dropout,
             fill_strategy=self.fill_strategy,
             global_means=global_means if self.fill_strategy == "mean" else None,
+            logvar_clamp=self.logvar_clamp,
         ).to(device)
 
         self.history_ = fit(

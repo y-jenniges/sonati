@@ -4,9 +4,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-# Predicted log-variance is clamped to this symmetric range. Without it the
-# heteroscedastic NLL can drive the logvar head to extreme values whose exp()
-# overflows and collapses training to NaN.
+# Default log-variance clamp.
+# Protects the heteroscedastic NLL loss from an overflowing exp and thus from a NaN-collapse.
 LOGVAR_CLAMP = 10.0
 
 
@@ -72,6 +71,9 @@ class SONATI(nn.Module):
     global_means : list[float] or None
         Per-feature means used when ``fill_strategy='mean'``. Registered as a
         buffer and automatically moved to the correct device.
+    logvar_clamp : float
+        Predicted log-variance is clamped to ``[-logvar_clamp, logvar_clamp]``.
+        To match, the training loss floors the variance at ``exp(-logvar_clamp)``.
     """
 
     def __init__(
@@ -86,16 +88,22 @@ class SONATI(nn.Module):
             dropout: float = 0.1,
             fill_strategy: str = "zero",
             global_means=None,
+            logvar_clamp: float = LOGVAR_CLAMP,
     ):
         super().__init__()
+        # Ensure logvar clamp is positive
+        if logvar_clamp <= 0:
+            raise ValueError(f"logvar_clamp must be positive, got {logvar_clamp}.")
+
+        # Set class variables
         self.n_features = n_features
+        self.logvar_clamp = float(logvar_clamp)
         self.coord_dim = coord_dim
         self.fill_strategy = fill_strategy
 
+        # Register global feature means
         if global_means is not None:
-            self.register_buffer(
-                "global_means", torch.tensor(global_means, dtype=torch.float32)
-            )
+            self.register_buffer( "global_means", torch.tensor(global_means, dtype=torch.float32))
         else:
             self.global_means = None
 
@@ -158,7 +166,7 @@ class SONATI(nn.Module):
         -------
         pred_mean : Tensor (B, F)
         pred_logvar : Tensor (B, F)
-            Clamped to ``[-LOGVAR_CLAMP, LOGVAR_CLAMP]`` to keep the
+            Clamped to ``[-logvar_clamp, logvar_clamp]`` to keep the
             heteroscedastic NLL numerically stable.
         """
         # Project query token
@@ -179,5 +187,5 @@ class SONATI(nn.Module):
 
         # Only return query token
         h = q[:, 0]  # (B, D)
-        pred_logvar = self.logvar_head(h).clamp(min=-LOGVAR_CLAMP, max=LOGVAR_CLAMP)
+        pred_logvar = self.logvar_head(h).clamp(min=-self.logvar_clamp, max=self.logvar_clamp)
         return self.mean_head(h), pred_logvar

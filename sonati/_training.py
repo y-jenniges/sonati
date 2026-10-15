@@ -19,10 +19,6 @@ from sonati._model import LOGVAR_CLAMP
 
 logger = logging.getLogger(__name__)
 
-# Matches the model head's own clamp, so the variance floor never binds
-# tighter than pred_logvar's actual range.
-_VAR_FLOOR = math.exp(-LOGVAR_CLAMP)
-
 
 def _tqdm_ok(verbose: bool) -> bool:
     """True only when stderr is an interactive terminal."""
@@ -39,15 +35,15 @@ def _masked_mse(pred: Tensor, target: Tensor, mask: Tensor) -> Tensor:
 
 
 def _heteroscedastic_nll(pred_mean: Tensor, pred_logvar: Tensor,
-                         target: Tensor, mask: Tensor) -> Tensor:
+                         target: Tensor, mask: Tensor, var_floor: float) -> Tensor:
     """Gaussian NLL with log-variance (Kendall & Gal 2017)."""
     # Variance floored to match the model head's logvar clamp
-    var = pred_logvar[mask].exp().clamp(min=_VAR_FLOOR)
+    var = pred_logvar[mask].exp().clamp(min=var_floor)
     return (0.5 * (pred_logvar[mask] + (target[mask] - pred_mean[mask]) ** 2 / var)).mean()
 
 
 def _beta_nll(pred_mean: Tensor, pred_logvar: Tensor,
-              target: Tensor, mask: Tensor, beta: float = 0.5) -> Tensor:
+              target: Tensor, mask: Tensor, var_floor: float, beta: float = 0.5) -> Tensor:
     """Beta-NLL loss. It multiplies each point's Gaussian heteroscedastic NLL by its predicted variance^β.
 
     Beta is the weighing of the exponent and in [0, 1].
@@ -62,12 +58,13 @@ def _beta_nll(pred_mean: Tensor, pred_logvar: Tensor,
     """
     logvar = pred_logvar[mask]
     # Variance floored to match the model head's logvar clamp
-    var = logvar.exp().clamp(min=_VAR_FLOOR)
+    var = logvar.exp().clamp(min=var_floor)
     nll = 0.5 * (logvar + (target[mask] - pred_mean[mask]) ** 2 / var)
     return (var.detach() ** beta * nll).mean()
 
 
-def _build_loss(loss_name: str, loss_kwargs: dict | None = None) -> Callable:
+def _build_loss(loss_name: str, loss_kwargs: dict | None = None,
+                logvar_clamp: float = LOGVAR_CLAMP) -> Callable:
     """
     Return the loss callable corresponding to ``loss_name``.
 
@@ -76,17 +73,18 @@ def _build_loss(loss_name: str, loss_kwargs: dict | None = None) -> Callable:
     """
     # Loss-specific function calls
     loss_kwargs = dict(loss_kwargs or {})
+    var_floor = math.exp(-logvar_clamp)
     if loss_name == "mse":
         loss = lambda mean, logvar, target, mask: _masked_mse(mean, target, mask)
         allowed: set[str] = set()
     elif loss_name == "hetero":
-        loss = _heteroscedastic_nll
+        loss = lambda mean, logvar, target, mask: _heteroscedastic_nll(mean, logvar, target, mask, var_floor)
         allowed = set()
     elif loss_name == "beta_nll":
         beta = loss_kwargs.get("beta", 0.5)
         if not 0.0 <= beta <= 1.0:
             raise ValueError(f"beta must lie in [0, 1], got {beta}.")
-        loss = lambda mean, logvar, target, mask: _beta_nll(mean, logvar, target, mask, beta=beta)
+        loss = lambda mean, logvar, target, mask: _beta_nll(mean, logvar, target, mask, var_floor, beta=beta)
         allowed = {"beta"}
     else:
         raise ValueError(f"Unknown loss_name '{loss_name}'. Choose 'mse', 'hetero' or 'beta_nll'.")
@@ -433,7 +431,7 @@ def fit(
         entry per epoch.
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = _build_loss(loss_name, loss_kwargs)
+    loss_fn = _build_loss(loss_name, loss_kwargs, logvar_clamp=model.logvar_clamp)
     stopper = EarlyStopping(patience=patience)
     best_state = deepcopy(model.state_dict())
     train_history: list[float] = []
