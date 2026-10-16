@@ -161,17 +161,15 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         moving the model to ``device`` to avoid forking after CUDA init.
         :meth:`transform` / :meth:`predict_with_uncertainty` reuse that
         warmed-up loader when called on the same data used to :meth:`fit`.
-        Otherwise, they load single-process, since the model is already on
-        ``device`` by then and forking would be unsafe.
+        For other data they use ``inference_num_workers`` (which defaults to
+        ``num_workers``).
     pin_memory : bool, default=False
         Passed to every internal ``DataLoader``. Speeds up host-to-device
         transfer on GPU. No effect on CPU.
-    inference_num_workers : int, default=0
+    inference_num_workers : int or None, default=None
         Worker processes for :meth:`transform` / :meth:`predict_with_uncertainty`
-        when called on data that doesn't match the training data (so
-        ``full_loader_`` can't be reused). Uses ``multiprocessing_context='spawn'``,
-        since the model is already on ``device`` by then and forking would be
-        unsafe.
+        when called on data that does not match the training data (so
+        ``full_loader_`` can't be reused). ``None`` uses ``num_workers``.
 
     Attributes
     ----------
@@ -238,7 +236,7 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             n_jobs: int | None = None,
             num_workers: int = 0,
             pin_memory: bool = False,
-            inference_num_workers: int = 0,
+            inference_num_workers: int | None = None,
             checkpoint_path: str | Path | None = None,
             logvar_clamp: float = 10.0,
     ):
@@ -378,12 +376,10 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
             return self.full_loader_
 
         # Otherwise use multiprocessing_context
-        if self.inference_num_workers > 0:
-            logger.info("Loading new inference data with %d spawned DataLoader worker(s)...",
-                       self.inference_num_workers)
-        return self._make_loader(coords_scaled, values_scaled, graph,
-                                 num_workers=self.inference_num_workers,
-                                 multiprocessing_context="spawn")
+        num_workers = self.num_workers if self.inference_num_workers is None else self.inference_num_workers
+        if num_workers > 0:
+            logger.info("Loading new inference data with %d spawned DataLoader worker(s)...", num_workers)
+        return self._make_loader(coords_scaled, values_scaled, graph, num_workers=num_workers, multiprocessing_context="spawn")
 
     # ------------------------------------------------------------------
     # Sklearn API

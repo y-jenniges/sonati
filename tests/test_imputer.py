@@ -473,6 +473,24 @@ def test_logvar_clamp_imputer():
     assert imputer.model_.logvar_clamp == 0.01  # clamp remains after fit
 
 
+@pytest.mark.parametrize("num_workers, inference_num_workers, expected", [
+    (3, None, 3),  # None means "same as num_workers"
+    (3, 0, 0),  # an explicit value (also 0) wins
+    (3, 2, 2),
+])
+def test_inference_num_workers_defaults_to_num_workers(monkeypatch, num_workers, inference_num_workers, expected):
+    imputer = SONATIImputer(**_FAST, num_workers=num_workers, inference_num_workers=inference_num_workers)
+    assert imputer.get_params()["inference_num_workers"] == inference_num_workers  # param stays unchanged
+
+    # Data that differs from the training data takes the non-reuse branch and builds a new loader
+    imputer.coords_full_ = torch.zeros(1, 1)
+    captured = {}
+    monkeypatch.setattr(imputer, "_make_loader", lambda *a, **k: captured.update(k))
+    imputer._inference_loader(torch.ones(2, 2), torch.ones(2, 2), graph={})
+    assert captured["num_workers"] == expected
+    assert captured["multiprocessing_context"] == "spawn"
+
+
 def test_fit_aborts_on_nonfinite_loss(monkeypatch, caplog):
     # A non-finite epoch loss must abort training instead of burning patience
     from sonati import _training
