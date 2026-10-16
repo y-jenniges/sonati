@@ -491,6 +491,50 @@ def test_inference_num_workers_defaults_to_num_workers(monkeypatch, num_workers,
     assert captured["multiprocessing_context"] == "spawn"
 
 
+def _fit_with_stub_epochs(monkeypatch, loss_name, **kwargs):
+    # Helper:  It replaces _train_epoch and _eval_epoch with dummies, so fit() runs one "epoch" on a dummy Linear model
+    from sonati import _training
+
+    captured = {}
+
+    # Fake _eval_epoch
+    def fake_eval(model, loader, loss_fn, *args, **kw):
+        captured["loss_fn"] = loss_fn
+        return 0.0
+
+    monkeypatch.setattr(_training, "_train_epoch", lambda *a, **k: 0.0)  # fake _train_epoch
+    monkeypatch.setattr(_training, "_eval_epoch", fake_eval)
+    model = torch.nn.Linear(1, 1)  # dummy linear model
+    model.logvar_clamp = 10.0
+    _training.fit(model, train_loader=[], val_loader=[], max_epochs=1, lr=1e-3, masking=[RandomMask()], patience=1,
+                  device=torch.device("cpu"), verbose=False, loss_name=loss_name, **kwargs)
+    return captured.get("loss_fn")  # None when fit() resumed a finished checkpoint and ran no epoch
+
+
+def test_beta_nll_validates_on_plain_nll(monkeypatch):
+    # beta-NLL loss uses plain NLL loss for validation/early stopping
+    from sonati._training import _build_loss
+
+    val_loss_fn = _fit_with_stub_epochs(monkeypatch, "beta_nll")
+
+    # Dummy predictions with a clear error (0 vs 0.5), so that NLL and beta-NLL give different numbers
+    mean, logvar, target = torch.zeros(4, 2), torch.full((4, 2), -2.0), torch.full((4, 2), 0.5)
+    mask = torch.ones(4, 2, dtype=torch.bool)  # all entries observed
+    nll = _build_loss("hetero")(mean, logvar, target, mask)  # reference: plain heteroscedastic NLL
+    assert torch.isclose(val_loss_fn(mean, logvar, target, mask), nll)  # validation = plain NLL
+    assert not torch.isclose(_build_loss("beta_nll")(mean, logvar, target, mask), nll)  # training loss differs
+
+
+def test_hetero_validates_on_its_own_loss(monkeypatch):
+    # Plain 'hetero' loss uses itself for validation/early stopping
+    from sonati._training import _build_loss
+
+    val_loss_fn = _fit_with_stub_epochs(monkeypatch, "hetero")
+    mean, logvar, target = torch.zeros(4, 2), torch.full((4, 2), -2.0), torch.full((4, 2), 0.5)
+    mask = torch.ones(4, 2, dtype=torch.bool)
+    assert torch.isclose(val_loss_fn(mean, logvar, target, mask), _build_loss("hetero")(mean, logvar, target, mask))
+
+
 def test_fit_aborts_on_nonfinite_loss(monkeypatch, caplog):
     # A non-finite epoch loss must abort training instead of burning patience
     from sonati import _training

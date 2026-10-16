@@ -89,7 +89,9 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
     loss_name : str, default='hetero'
         Training loss: ``'hetero'`` for heteroscedastic Gaussian NLL,
         ``'beta_nll'`` for the beta-NLL of Seitzer et al. (2022) or
-        ``'mse'`` for masked MSE.
+        ``'mse'`` for masked MSE. With ``'beta_nll'`` as validation loss, early
+        stopping and best-weights selection use the plain heteroscedastic NLL,
+        (beta-NLL value does not reflect model quality).
     loss_kwargs : dict or None, default=None
         Extra options for the loss, e.g. ``'beta_nll'`` accepts
         ``{"beta": float}``.

@@ -424,6 +424,11 @@ def fit(
         Extra args for the loss, e.g. ``'beta_nll'`` accepts
         ``{"beta": float}``.
 
+    Notes
+    -----
+    With ``loss_name='beta_nll'`` the training loss is the beta-NLL, but validation, early stopping and the
+    best-weights selection use the plain heteroscedastic NLL (Seitzer et al., 2022, Sec. 4.1).
+
     Returns
     -------
     history : dict
@@ -432,6 +437,10 @@ def fit(
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = _build_loss(loss_name, loss_kwargs, logvar_clamp=model.logvar_clamp)
+    # beta-NLL loss evaluates model quality plain using NLL loss (Seitzer et al., 2022)
+    monitor_name = "hetero" if loss_name == "beta_nll" else loss_name
+    val_loss_fn = _build_loss("hetero", logvar_clamp=model.logvar_clamp) if loss_name == "beta_nll" else loss_fn
+    val_label = "val_nll" if loss_name == "beta_nll" else "val"
     stopper = EarlyStopping(patience=patience)
     best_state = deepcopy(model.state_dict())
     train_history: list[float] = []
@@ -458,6 +467,13 @@ def fit(
         best_state = checkpoint["best_state"]  # best state
         train_history, val_history = checkpoint["train_history"], checkpoint["val_history"]  # history
         start_epoch, finished = len(train_history), checkpoint["finished"]  # epoch status
+
+        # Saved validation metric must match resume validation metric
+        saved_monitor = checkpoint.get("val_metric", loss_name)
+        if saved_monitor != monitor_name:
+            raise ValueError(f"Checkpoint {checkpoint_path} early-stopped on '{saved_monitor}' validation loss, but "
+                             f"loss_name='{loss_name}' monitors '{monitor_name}'. Retrain from scratch.")
+
         logger.info("Resumed from checkpoint %s at epoch %d (best=%d, finished=%s)",
                     checkpoint_path, start_epoch, stopper.best_epoch, finished)
 
@@ -470,7 +486,7 @@ def fit(
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "stopper": dict(stopper.__dict__), "best_state": best_state,
             "train_history": train_history, "val_history": val_history,
-            "finished": is_finished,
+            "finished": is_finished, "val_metric": monitor_name,
         }, tmp_path)
         tmp_path.replace(checkpoint_path)  # a kill mid-write keeps the old file
 
@@ -479,14 +495,14 @@ def fit(
                       total=max_epochs):
         # One training epoch, one validation epoch
         train_loss = _train_epoch(
-            model, train_loader, optimizer, loss_fn, masking, device,
+            model, loader=train_loader, optimizer=optimizer, loss_fn=loss_fn, masking=masking, device=device,
             donor_pool_mask=donor_pool_mask,
             grad_clip_norm=grad_clip_norm,
             verbose=verbose,
         )
         val_mask_generator.manual_seed(seed)  # same val masks every epoch
         val_loss = _eval_epoch(
-            model, val_loader, loss_fn, masking, device,
+            model, loader=val_loader, loss_fn=val_loss_fn, masking=masking, device=device,
             donor_pool_mask=donor_pool_mask,
             verbose=verbose,
             generator=val_mask_generator,
@@ -514,7 +530,7 @@ def fit(
         # Log epoch summary
         msg = (
             f"[{strftime('%d-%m-%Y %H:%M:%S')}] Epoch {epoch:03d}/{max_epochs}"
-            f" | train={train_loss:.4f} | val={val_loss:.4f}"
+            f" | train={train_loss:.4f} | {val_label}={val_loss:.4f}"
             f" | patience {stopper.counter}/{stopper.patience}"
         )
         logger.info(msg)
