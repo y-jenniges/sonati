@@ -151,7 +151,7 @@ If you use this package, please cite:
 ```bibtex
 @article{jenniges_inprep,
   title   = {{SONATI}: Spatio-temporal ocean neighbourhood asymmetric transformer for imputation of sparse, tabular data with uncertainty},
-  author  = {Yvonne Jenniges and Boris Peter Koch and Sebastian Maneth},
+  author  = {Yvonne Jenniges and Boris Peter Koch and Maike Sonnewald and Sebastian Maneth},
   journal = {Environmental Data Science},
   year    = {in prep.},
 }
