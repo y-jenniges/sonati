@@ -12,6 +12,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Yvonne Jenniges" },
     { name = "Boris Peter Koch" },
+    { name = "Maike Sonnewald" },
     { name = "Sebastian Maneth"}
 ]
 keywords = [
@@ -35,7 +36,7 @@ dependencies = [
 
 [project.urls]
 "Source Code" = "https://github.com/y-jenniges/sonati"
-"Bug Tracker"  = "https://github.com/y-jenniges/sonati/issues"
+"Bug Tracker" = "https://github.com/y-jenniges/sonati/issues"
 
 [tool.setuptools.packages.find]
 include = ["sonati*"]

@@ -1,8 +1,11 @@
 # SONATI - Spatio-temporal Ocean Neighbourhood Asymmetric Transformer for Imputation
 
-`sonati` is a Python package for imputing missing values in sparse spatiotemporal data. It implements **SONATI**, a transformer that attends separately to the k-nearest temporal, then spatial, neighbours of each query point and returns both a reconstructed value and a per-point uncertainty estimate.
+`sonati` is a Python package for imputing missing values in sparse spatio-temporal data. It implements **SONATI**, 
+a transformer that attends separately to the k-nearest temporal, then l-nearest spatial neighbours of each query point and 
+returns a filled value and a per-point uncertainty estimate.
 
-The model was developed for oceanographic in-situ observations but applies to any point-cloud data with latitude, longitude, depth, and time coordinates.
+The model was developed for oceanographic in-situ observations but applies to any point-cloud data 
+with latitude, longitude, depth and time coordinates.
 
 ## Installation
 
@@ -31,31 +34,37 @@ Requires Python ≥ 3.11 and PyTorch ≥ 2.0.
 import numpy as np
 from sonati import SONATIImputer
 
-# X      - (n_samples, n_features), NaN marks missing values
-# coords - (n_samples, 4) as [latitude (°), longitude (°), depth (m), time]
+# X           - (n_samples, n_features), NaN marks missing values
+# coords      - (n_samples, 4) as [latitude (°), longitude (°), depth (m), time]
+# val_indices - row indices held out for early stopping (required), e.g. random or block hold-out
+rng = np.random.default_rng(0)
+val_indices = rng.choice(len(X), size=len(X) // 5, replace=False)
+
 imputer = SONATIImputer(
+    val_indices=val_indices,
     n_neighbours_space=30,
     n_neighbours_time=30,
-    loss_name="hetero",   # heteroscedastic NLL — also trains a variance head
+    loss_name="hetero",     # heteroscedastic NLL - also trains a variance head
     max_epochs=100,
-    device="auto",        # uses CUDA when available
+    device="auto",          # uses CUDA when available
 )
 X_filled = imputer.fit_transform(X, coords)
 ```
 
-Fit and transform can be called separately, e.g. to impute data not seen during training:
-
-```python
-imputer.fit(X_train, coords_train)
-X_test_filled = imputer.transform(X_test, coords_test)
-```
+Note that for data other than the training set, the k-NN graph is built from the passed rows only, 
+so `X_test` must contain more than `max(n_neighbours_space, n_neighbours_time)` rows and 
+points can only attend to other rows of `X_test`, not to the training observations.
 
 When `transform()` or `predict_with_uncertainty()` is called on the training data itself, the k-NN graph built during `fit()` is reused automatically instead of being rebuilt - worth on large datasets, where the graph build can take long.
 
-To obtain per-point uncertainty estimates alongside imputed values, use `predict_with_uncertainty()`. It runs `n_inference` forward passes with dropout active (MC Dropout) to decompose uncertainty into aleatoric (data noise, from the variance head) and epistemic (model uncertainty, from the spread across passes) components:
+To obtain per-point uncertainty estimates alongside imputed values, use `predict_with_uncertainty()`. 
+It runs `n_inference` forward passes with dropout active (MC Dropout) to decompose uncertainty into 
+aleatoric (data noise, from the variance head) and epistemic (model uncertainty, from the spread across passes) components. 
+Aleatoric uncertainty requires `loss_name='hetero'` (or `'beta_nll'`); 
+with `'mse'` the variance head is untrained and `aleatoric_std` is returned as NaN:
 
 ```python
-imputer = SONATIImputer(n_inference=50, loss_name="hetero")
+imputer = SONATIImputer(val_indices=val_indices, n_inference=50, loss_name="hetero")
 imputer.fit(X_train, coords_train)
 X_filled, aleatoric_std, epistemic_std = imputer.predict_with_uncertainty(X_test, coords_test)
 ```
@@ -66,17 +75,21 @@ X_filled, aleatoric_std, epistemic_std = imputer.predict_with_uncertainty(X_test
 
 | Column | Meaning | Unit |
 |--------|---------|------|
-| 0 | Latitude | degrees (−90 … 90) |
-| 1 | Longitude | degrees (−180 … 180) |
-| 2 | Depth | metres |
-| 3 | Time | numeric year, or month 1–12 with `cyclic_time=True` |
+| 0 | Latitude | Degrees (−90 ... 90) |
+| 1 | Longitude | Degrees (−180 ... 180) |
+| 2 | Depth | Metres |
+| 3 | Time | Numeric year, or month 1–12 with `cyclic_time=True` |
 
-Latitude and longitude are mapped internally to Cartesian unit-sphere coordinates. Depth and time are MinMax-scaled. Features are scaled independently per variable on observed values only. All inverse transforms are applied automatically before returning imputed values.
+Latitude and longitude are mapped internally to Cartesian unit-sphere coordinates. Depth and time are MinMax-scaled. 
+Features are scaled independently per variable on observed values only. 
+All inverse transforms are applied automatically before returning imputed values.
 
 ## Key hyperparameters
 
 | Parameter | Default | Description                                                                                                            |
 |-----------|---------|------------------------------------------------------------------------------------------------------------------------|
+| `val_indices` | Required | Row indices of `X` held out as internal validation set for early stopping |
+| `test_idx` | `None` | Row indices withheld entirely from training (coordinates still used for the k-NN graph) |
 | `n_neighbours_space` | 30 | Neighbours per query in the spatial graph                                                                              |
 | `n_neighbours_time` | 30 | Neighbours per query in the temporal graph                                                                             |
 | `d_model` | 64 | Transformer embedding dimension                                                                                        |
@@ -86,21 +99,24 @@ Latitude and longitude are mapped internally to Cartesian unit-sphere coordinate
 | `dim_feedforward` | 128 | Feedforward sublayer width                                                                                             |
 | `dropout` | 0.1 | Dropout rate (training only)                                                                                           |
 | `fill_strategy` | `'zero'` | Fill unobserved positions with `'zero'` or `'mean'`                                                                    |
-| `loss_name` | `'hetero'` | `'hetero'` (Gaussian NLL + variance head) or `'mse'`                                                                   |
+| `loss_name` | `'hetero'` | `'hetero'` (Gaussian NLL + variance head), `'beta_nll'` (beta-NLL, Seitzer et al. 2022) or `'mse'`                                                                   |
 | `max_epochs` | 100 | Training epoch limit                                                                                                   |
 | `lr` | 1e-3 | Adam learning rate                                                                                                     |
 | `batch_size` | 64 | Mini-batch size                                                                                                        |
 | `masking` | `None` | Masking strategies applied during training. `None` defaults to `[RandomMask(ratio=0.5), CylindricalMask(radius=0.1, prob=1.0)]` |
-| `val_method` | `'random'` | Internal validation split: `'random'` or `'block'` (geographic)                                                        |
-| `val_indices` | `None` | Explicit validation row indices; overrides `val_method`/`val_frac`                                                     |
 | `grad_clip_norm` | 1.0 | Maximum gradient norm (clipped before each optimiser step); stabilises heteroscedastic training, set to `0` to disable |
 | `n_jobs` | `None` | Parallel jobs for the spatial k-NN graph build (sklearn convention: `None`=1, `-1`=all cores)                          |
 | `patience` | 10 | Early-stopping patience (epochs)                                                                                       |
-| `val_frac` | 0.2 | Internal validation fraction                                                                                           |
 | `cyclic_time` | `False` | Cyclic sine/cosine encoding for the time column                                                                        |
 | `device` | `'auto'` | `'cpu'`, `'cuda'`, or `'auto'`                                                                                         |
 | `seed` | 42 | Random seed                                                                                                            |
 | `n_inference` | 50 | MC Dropout forward passes used by `predict_with_uncertainty()`                                                         |
+| `loss_kwargs` | `None` | Extra loss options, e.g. `{"beta": 0.5}` for `'beta_nll'` |
+| `logvar_clamp` | 10.0 | Predicted log-variance is clamped to `[-logvar_clamp, logvar_clamp]` |
+| `checkpoint_path` | `None` | File path for training checkpoints. Interrupted training resumes from it |
+| `feature_names` | `None` | Optional feature names (inferred from a DataFrame) |
+| `verbose` | `True` | Progress bars and per-epoch log lines |
+| `num_workers` / `inference_num_workers` / `pin_memory` | `0` / `None` / `False` | DataLoader settings for `fit()` and for inference on other data |
 
 ## Masking strategies
 
@@ -125,15 +141,15 @@ from sonati import SONATIImputer, precompute_graph
 graph = precompute_graph(coords, n_neighbours_space=60, n_neighbours_time=60)
 
 for k in (15, 30, 45, 60):
-    imputer = SONATIImputer(n_neighbours_space=k, n_neighbours_time=k)
-    imputer.fit(X, coords, graph=graph)   # no k-NN build in the trial
+    imputer = SONATIImputer(val_indices, n_neighbours_space=k, n_neighbours_time=k)
+    imputer.fit(X, coords, graph=graph)  # no k-NN build in the trial
 ```
 
 ## Examples
 
 The `examples/` directory contains runnable end-to-end scripts:
 
-- `real_world_test.py` - air-quality (Open-Meteo API) and traffic (METR-LA) imputation with public data downloaded on run.
+- `real_world_test.py`: Air-quality (Open-Meteo API) and traffic (METR-LA) imputation with public data downloaded on run.
 <!-- - `jenniges_reproduction.py` - reproduces the sparse, time-resolved ocean imputation from the [companion research project](https://github.com/y-jenniges/time_imputation) on the preprocessed COMFORT dataset (dataset + train/test split hosted on Zenodo). This is a workflow, not a bit-exact, reproduction: an independently trained model agrees with the research pipeline only within predicted uncertainty, which the script quantifies via `agreement_within_uncertainty()`. Pass `--data-path` to run against a local CSV, `--split-path` to use the published split as the exact early-stopping monitor, and `--reference-path` to log agreement against a reference imputation.
 -->
 

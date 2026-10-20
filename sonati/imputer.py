@@ -67,6 +67,12 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
 
     Parameters
     ----------
+    val_indices : array-like of int
+        Row indices to hold out as the internal validation set for early
+        stopping.
+    test_idx : array-like of int or None, default=None
+        Row indices to withhold entirely from training. Coordinates for these
+        rows are still used to build the k-NN graph.
     n_neighbours_space : int, default=30
         Number of nearest neighbours per query in the spatial graph.
     n_neighbours_time : int, default=30
@@ -141,12 +147,6 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         :meth:`predict_with_uncertainty` to estimate epistemic uncertainty
         via MC Dropout. Must be ``> 1`` to get a meaningful epistemic
         estimate; ``1`` produces a deterministic prediction.
-    val_indices : array-like of int
-        Row indices to hold out as the internal validation set for early
-        stopping. Required.
-    test_idx : array-like of int or None, default=None
-        Row indices to withhold entirely from training. Coordinates for these
-        rows are still used to build the k-NN graph.
     verbose : bool, default=True
         Show progress bars and per-epoch log lines during training and
         inference. Set to ``False`` to silence all console output (e.g.
@@ -204,7 +204,9 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
     ...     rng.uniform(0, 5000, n),                   # depth (m)
     ...     rng.integers(1990, 2020, n).astype(float), # year
     ... ])
-    >>> imputer = SONATIImputer(max_epochs=50, n_neighbours_space=15, n_neighbours_time=15, verbose=False)
+    >>> val_indices = rng.choice(n, size=n // 5, replace=False)  # rows for early stopping
+    >>> imputer = SONATIImputer(val_indices, max_epochs=50, n_neighbours_space=15,
+    ...                         n_neighbours_time=15, verbose=False)
     >>> X_filled = imputer.fit_transform(X, coords)
     """
 
