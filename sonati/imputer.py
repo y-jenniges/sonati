@@ -107,8 +107,8 @@ class SONATIImputer(BaseEstimator, TransformerMixin):
         Adam learning rate.
     batch_size : int, default=64
         Mini-batch size for training and inference.
-    masking : list of RandomMask / CylindricalMask / CopyMask / PerFeatureMask or None
-        Masking strategies applied during training and validation ot both query and
+    masking : list of RandomMask / CylindricalMask / CopyMask / PerFeatureMask or None, default=None
+        Masking strategies applied during training and validation to both query and
         neighbourhood token, e.g.::
 
             from sonati import SONATIImputer, RandomMask, CylindricalMask, CopyMask
