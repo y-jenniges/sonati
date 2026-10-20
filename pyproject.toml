@@ -37,6 +37,7 @@ dependencies = [
 [project.urls]
 "Source Code" = "https://github.com/y-jenniges/sonati"
 "Bug Tracker" = "https://github.com/y-jenniges/sonati/issues"
+"Documentation" = "https://sonati.readthedocs.io"
 
 [tool.setuptools.packages.find]
 include = ["sonati*"]
